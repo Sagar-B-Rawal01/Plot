@@ -1,0 +1,862 @@
+function data_plot_app()
+loadedFiles = {};
+%% MAIN WINDOW
+fig = uifigure('Name','Data Analysis and Plot Builder',...
+               'Position',[100 100 1000 600]);
+
+tg = uitabgroup(fig,'Units','normalized','Position',[0 0 1 1]);
+
+tabImport = uitab(tg,'Title','Data Import');
+tabPlot   = uitab(tg,'Title','Plot Builder');
+advancedTab = uitab(tabGroup,'Title','Advanced');
+
+%% PLOT BUILDER TAB
+
+plotGrid = uigridlayout(tabPlot,[1 3]);
+plotGrid.ColumnWidth = {250,250,'1x'};
+
+%% SIGNAL PANEL
+
+signalPanel = uipanel(plotGrid,'Title','Signals');
+signalPanel.Layout.Column = 1;
+
+uilabel(grid,'Text','Search X')
+xSearch = uieditfield(grid,'text','ValueChangedFcn',@filterX);
+
+uilabel(grid,'Text','Search Y')
+ySearch = uieditfield(grid,'text','ValueChangedFcn',@filterY);
+
+signalGrid = uigridlayout(signalPanel,[4 1]);
+
+uilabel(signalGrid,'Text','X Axis');
+
+xList = uilistbox(signalGrid);
+
+uilabel(signalGrid,'Text','Y Signals');
+
+yList = uilistbox(signalGrid,'Multiselect','on');
+
+%% PLOT SETTINGS PANEL
+
+
+settingsPanel = uipanel(plotGrid,'Title','Plot Settings');
+settingsPanel.Layout.Column = 2;
+
+settingsGrid = uigridlayout(settingsPanel,[6 2]);
+
+
+
+uilabel(settingsGrid,'Text','Plot Type');
+plotType = uidropdown(settingsGrid,'Items',{'plot','scatter','stairs'});
+
+uilabel(settingsGrid,'Text','Subplot Row');
+subplotRow = uieditfield(settingsGrid,'numeric','Value',1);
+
+uilabel(settingsGrid,'Text','Subplot Column');
+subplotCol = uieditfield(settingsGrid,'numeric','Value',1);
+
+legendCheck = uicheckbox(settingsGrid,'Text','Legend','Value',true);
+gridCheck = uicheckbox(settingsGrid,'Text','Grid','Value',true);
+
+uilabel(settingsGrid,'Text','Figure Number');
+figNum = uieditfield(settingsGrid,'numeric','Value',1);
+
+uilabel(settingsGrid,'Text','subplot index');
+subplotindex = uieditfield(settingsGrid,'numeric','Value',1);
+
+uilabel(settingsGrid,'Text','Color')
+colorDrop = uidropdown(settingsGrid,...
+    'Items',{'auto','r','g','b','k','m','c','y'},...
+    'Value','auto');
+
+%% PLOT LIST PANEL
+
+plotPanel = uipanel(plotGrid,'Title','Plot List');
+plotPanel.Layout.Column = 3;
+
+plotListGrid = uigridlayout(plotPanel,[5 1]);
+
+plotList = uilistbox(plotListGrid);
+
+btnAddPlot = uibutton(plotListGrid,'Text','Add Plot',...
+    'ButtonPushedFcn',@addPlot);
+
+btnPreview = uibutton(plotListGrid,'Text','Preview Plot',...
+    'ButtonPushedFcn',@previewPlot);
+
+btnScript = uibutton(plotListGrid,'Text','Generate MATLAB Script',...
+    'ButtonPushedFcn',@generateScript);
+
+btnClear = uibutton(plotListGrid,'Text','Clear Plot List',...
+    'ButtonPushedFcn',@clearPlots);
+
+%% GRID LAYOUT FOR IMPORT TAB
+ igrid = uigridlayout(tabImport,[3 1]);
+ igrid.RowHeight={40,40,'1x'};
+% grid.ColumnWidtht={'1x'};
+
+%% ROW 1: LOAD BUTTON
+row1 = uigridlayout(igrid,[1 3]);
+
+btnLoad = uibutton(row1,...
+    'Text','Load MAT File',...
+    'ButtonPushedFcn',@loadMat);
+
+lblSearch = uilabel(row1,'Text','Search');
+
+searchBox = uieditfield(row1,'text',...
+    'ValueChangedFcn',@searchVar);
+
+%% ROW 2: GLOBAL TOOLS
+row2 = uigridlayout(igrid,[1 3]);
+
+uibutton(row2,'Text','Apply Scale To All',...
+    'ButtonPushedFcn',@applyScale);
+
+uibutton(row2,'Text','Apply Offset To All',...
+    'ButtonPushedFcn',@applyOffset);
+
+uilabel(row2,'Text','Variable Settings');
+
+%% ROW 3: VARIABLE TABLE
+columns = {'Name','Label','Unit','Scale','Offset','Style','Width'};
+
+table = uitable(igrid,...
+    'ColumnName',columns,...
+    'ColumnEditable',[false true true true true true true]);
+table.CellEditCallback = @tableEdit;
+% table.Layout.Row=3;
+% table.Layout.Column=1;
+
+%% STORAGE
+dataVars = struct;
+plots = {};
+events = {};
+customPlots = {};
+relativePlots = {};
+
+%% LOAD MAT FILE
+    function loadMat(~,~)
+
+        [files,path] = uigetfile('*.mat','Select MAT files','MultiSelect','on');
+
+        if isequal(files,0)
+            return
+        end
+
+        if ischar(files)
+            files = {files};
+        end
+
+        for k = 1:length(files)
+            loadedFiles{end+1} = fullfile(path,files{k});
+            S = load(fullfile(path,files{k}));
+            names = fieldnames(S);
+
+            for i = 1:length(names)
+
+                name = names{i};
+                newName = name;
+                c = 1;
+
+                while isfield(dataVars,newName)
+                    newName = [name '_' num2str(c)];
+                    c = c + 1;
+                end
+
+                if isfield(dataVars,newName)
+
+                    % variable already exists → keep properties
+                    dataVars.(newName).data = data;
+
+                else
+
+                    % new variable → create properties
+                    dataVars.(newName).data = S.(name);
+                    dataVars.(newName).label = newName;
+                    dataVars.(newName).unit = '';
+                    dataVars.(newName).scale = 1;
+                    dataVars.(newName).offset = 0;
+                    dataVars.(newName).style = '-';
+                    dataVars.(newName).width = 1.5;
+
+
+ 
+
+                end
+
+            end
+        end
+
+        refreshTable()
+        updateSignalLists()
+
+    end
+%% eventab
+eventPanel = uipanel(advancedTab,'Title','Event','Position',[10 250 350 200]);
+
+uilabel(eventPanel,'Text','Event Name','Position',[10 150 80 22]);
+eventName = uieditfield(eventPanel,'text','Position',[100 150 150 22]);
+
+uilabel(eventPanel,'Text','Time Var','Position',[10 110 80 22]);
+eventTime = uidropdown(eventPanel,'Items',varNames,'Position',[100 110 150 22]);
+
+uilabel(eventPanel,'Text','Value','Position',[10 70 80 22]);
+eventValue = uieditfield(eventPanel,'numeric','Position',[100 70 150 22]);
+
+addEventBtn = uibutton(eventPanel,'Text','Add Event',...
+    'Position',[100 30 120 30],...
+    'ButtonPushedFcn',@addEvent);
+
+customPanel = uipanel(advancedTab,'Title','Custom Plot','Position',[380 250 350 200]);
+
+uilabel(customPanel,'Text','Expression','Position',[10 120 80 22]);
+customExpr = uieditfield(customPanel,'text',...
+    'Position',[100 120 200 22]);
+
+uilabel(customPanel,'Text','Label','Position',[10 80 80 22]);
+customLabel = uieditfield(customPanel,'text',...
+    'Position',[100 80 200 22]);
+
+addCustomBtn = uibutton(customPanel,'Text','Add Custom',...
+    'Position',[100 30 120 30],...
+    'ButtonPushedFcn',@addCustomPlot);
+
+relativePanel = uipanel(advancedTab,'Title','Relative Plot','Position',[750 250 350 200]);
+
+uilabel(relativePanel,'Text','Variable','Position',[10 130 80 22]);
+relVar = uidropdown(relativePanel,'Items',varNames,...
+    'Position',[100 130 150 22]);
+
+uilabel(relativePanel,'Text','Reference','Position',[10 90 80 22]);
+relRef = uidropdown(relativePanel,'Items',varNames,...
+    'Position',[100 90 150 22]);
+
+addRelBtn = uibutton(relativePanel,'Text','Add Relative',...
+    'Position',[100 40 120 30],...
+    'ButtonPushedFcn',@addRelative);
+
+
+%% REFRESH TABLE
+    function refreshTable()
+
+        names = fieldnames(dataVars);
+        tableData = cell(length(names),7);
+
+        for i = 1:length(names)
+
+            v = dataVars.(names{i});
+
+            tableData(i,:) = {names{i},v.label,v.unit,...
+                              v.scale,v.offset,v.style,v.width};
+        end
+
+        table.Data = tableData;
+
+    end
+
+%% SEARCH
+    function searchVar(src,~)
+
+        keyword = lower(src.Value);
+        names = fieldnames(dataVars);
+
+        tableData = {};
+        idx = 1;
+
+        for i = 1:length(names)
+
+            if contains(lower(names{i}),keyword)
+
+                v = dataVars.(names{i});
+
+                tableData(idx,:) = {names{i},v.label,v.unit,...
+                                    v.scale,v.offset,v.style,v.width};
+
+                idx = idx + 1;
+
+            end
+        end
+
+        table.Data = tableData;
+
+    end
+
+%% APPLY SCALE
+    function applyScale(~,~)
+
+saveTableToStruct()
+
+if isempty(table.Data)
+    return
+end
+
+scale = table.Data{1,4};
+
+names = fieldnames(dataVars);
+
+for i = 1:length(names)
+    dataVars.(names{i}).scale = scale;
+end
+
+refreshTable()
+
+end
+
+%% APPLY OFFSET
+    function applyOffset(~,~)
+
+saveTableToStruct()
+
+if isempty(table.Data)
+    return
+end
+
+offset = table.Data{1,5};
+
+names = fieldnames(dataVars);
+
+for i = 1:length(names)
+    dataVars.(names{i}).offset = offset;
+end
+
+refreshTable()
+
+end
+
+
+function saveTableToStruct()
+
+names = fieldnames(dataVars);
+
+for i = 1:size(table.Data,1)
+
+    name = table.Data{i,1};
+
+    dataVars.(name).label  = table.Data{i,2};
+    dataVars.(name).unit   = table.Data{i,3};
+    dataVars.(name).scale  = table.Data{i,4};
+    dataVars.(name).offset = table.Data{i,5};
+    dataVars.(name).style  = table.Data{i,6};
+    dataVars.(name).width  = table.Data{i,7};
+
+end
+end
+
+    function addPlot(~,~)
+
+        x = xList.Value;
+        y = yList.Value;
+
+        if isempty(x) || isempty(y)
+            return
+        end
+
+        entry = struct;
+
+        entry.x = x;
+        entry.y = y;
+
+        entry.type = plotType.Value;
+
+        entry.row = subplotRow.Value;
+        entry.col = subplotCol.Value;
+        entry.pos = subplotindex.Value;
+
+        entry.figNum = figNum.Value;
+
+        entry.color = colorDrop.Value;   % NEW (dropdown for color)
+
+        plots{end+1} = entry;
+
+        plotList.Items{end+1} = sprintf('Fig%d (%d,%d,%d): %s vs %s',...
+entry.figNum,entry.row,entry.col,entry.pos,x,strjoin(y,','));
+
+    end
+
+function previewPlot(~,~)
+
+if isempty(plots)
+    return
+end
+
+usedSubplots = containers.Map;
+
+for k = 1:length(plots)
+
+    p = plots{k};
+
+    figNum1 = p.figNum;
+    rows = p.row;
+    cols = p.col;
+    pos  = p.pos;
+
+    key = sprintf('%d_%d_%d_%d',figNum1,rows,cols,pos);
+
+    figure(figNum1)
+
+    ax = subplot(rows,cols,pos);
+
+    if isKey(usedSubplots,key)
+        hold(ax,'on')
+    else
+        cla(ax)
+        hold(ax,'on')
+        usedSubplots(key) = true;
+    end
+
+
+    %% -------- X VARIABLE --------
+
+    xVar  = p.x;
+    xdata = dataVars.(xVar).data;
+
+    if ismatrix(xdata) && size(xdata,2)==2
+        xdata = xdata(:,1);
+    end
+
+    xdata = xdata * dataVars.(xVar).scale + dataVars.(xVar).offset;
+
+
+    %% -------- NORMAL SIGNALS --------
+
+    for i = 1:length(p.y)
+
+        yVar = p.y{i};
+
+        ydata = dataVars.(yVar).data;
+
+        if ismatrix(ydata) && size(ydata,2)==2
+            xdata = ydata(:,1);
+            ydata = ydata(:,2);
+        end
+
+        ydata = ydata * dataVars.(yVar).scale + dataVars.(yVar).offset;
+
+        style = dataVars.(yVar).style;
+        width = dataVars.(yVar).width;
+        label = dataVars.(yVar).label;
+
+        if strcmp(p.color,'auto')
+
+            plot(ax,xdata,ydata,style,...
+                'LineWidth',width,...
+                'DisplayName',label)
+
+        else
+
+            plot(ax,xdata,ydata,style,...
+                'LineWidth',width,...
+                'Color',p.color,...
+                'DisplayName',label)
+
+        end
+    end
+
+
+    %% -------- CUSTOM SIGNALS --------
+
+    if exist('customSignals','var')
+
+        for c = 1:length(customSignals)
+
+            cs = customSignals{c};
+
+            if strcmp(cs.subplotKey,key)
+
+                xdata = dataVars.(cs.x).data;
+                ydata = eval(cs.expression);
+
+                plot(ax,xdata,ydata,...
+                    'LineWidth',1.5,...
+                    'DisplayName',cs.name)
+
+            end
+        end
+
+    end
+
+
+    %% -------- RELATIVE PLOTS --------
+
+    if exist('relativePlots','var')
+
+        for r = 1:length(relativePlots)
+
+            rp = relativePlots{r};
+
+            if strcmp(rp.subplotKey,key)
+
+                base = dataVars.(rp.base).data;
+                sig  = dataVars.(rp.signal).data;
+
+                rel = sig - base;
+
+                xdata = dataVars.(rp.x).data;
+
+                plot(ax,xdata,rel,...
+                    'LineWidth',1.5,...
+                    'DisplayName',[rp.signal ' - ' rp.base])
+
+            end
+        end
+
+    end
+
+
+    %% -------- EVENTS --------
+
+    if exist('events','var')
+
+        yl = ylim(ax);
+
+        for e = 1:length(events)
+
+            ev = events{e};
+
+            t = ev.time;
+
+            if isfield(ev,'color')
+                col = ev.color;
+            else
+                col = [0 0 0];
+            end
+
+            if isfield(ev,'style')
+                sty = ev.style;
+            else
+                sty = '--';
+            end
+
+            xline(ax,t,sty,ev.name,...
+                'Color',col,...
+                'LabelOrientation','horizontal',...
+                'LabelVerticalAlignment','bottom');
+
+        end
+    end
+
+
+    %% -------- AXIS LABEL --------
+
+    xLabel = dataVars.(xVar).label;
+    xUnit  = dataVars.(xVar).unit;
+
+    if ~isempty(xUnit)
+        xlabel(ax,[xLabel ' (' xUnit ')'])
+    else
+        xlabel(ax,xLabel)
+    end
+
+
+    %% -------- GRID --------
+
+    if gridCheck.Value
+        grid(ax,'on')
+    end
+
+
+    %% -------- LEGEND --------
+
+    if legendCheck.Value
+        legend(ax,'show')
+    end
+
+end
+
+end
+
+
+function generateScript(~,~)
+
+fid = fopen('generated_plot.m','w');
+
+fprintf(fid,'%% AUTO GENERATED PLOT SCRIPT\n');
+fprintf(fid,'clear\n');
+fprintf(fid,'close all\n\n');
+
+
+%% LOAD MAT FILES
+
+fprintf(fid,'%% Load MAT files safely\n');
+fprintf(fid,'dataVars = struct;\n\n');
+
+for i = 1:length(loadedFiles)
+
+fprintf(fid,'S = load(''%s'');\n',loadedFiles{i});
+fprintf(fid,'names = fieldnames(S);\n');
+
+fprintf(fid,'for iVar = 1:length(names)\n');
+fprintf(fid,'name = names{iVar};\n');
+fprintf(fid,'newName = name;\n');
+fprintf(fid,'c = 1;\n');
+
+fprintf(fid,'while isfield(dataVars,newName)\n');
+fprintf(fid,'newName = [name ''_'' num2str(c)];\n');
+fprintf(fid,'c = c + 1;\n');
+fprintf(fid,'end\n');
+
+fprintf(fid,'dataVars.(newName) = S.(name);\n');
+fprintf(fid,'end\n\n');
+
+end
+
+
+%% CREATE WORKING VARIABLES
+
+fprintf(fid,'%% Apply scale and offset\n');
+
+names = fieldnames(dataVars);
+
+for i = 1:length(names)
+
+n = names{i};
+
+scale  = dataVars.(n).scale;
+offset = dataVars.(n).offset;
+
+fprintf(fid,'%s = dataVars.%s;\n',n,n);
+
+fprintf(fid,'if ismatrix(%s) && size(%s,2)==2\n',n,n);
+fprintf(fid,'t_%s = %s(:,1);\n',n,n);
+fprintf(fid,'%s = %s(:,2);\n',n,n);
+fprintf(fid,'end\n');
+
+fprintf(fid,'%s = %f*%s + %f;\n\n',n,scale,n,offset);
+
+end
+
+
+
+%% PLOTTING
+
+fprintf(fid,'%% Plot section\n');
+
+currentFig = -1;
+
+for k = 1:length(plots)
+
+p = plots{k};
+
+if p.figNum ~= currentFig
+fprintf(fid,'figure(%d)\n',p.figNum);
+currentFig = p.figNum;
+end
+
+fprintf(fid,'subplot(%d,%d,%d)\n',p.row,p.col,p.pos);
+fprintf(fid,'hold on\n');
+
+xVar = p.x;
+
+for j = 1:length(p.y)
+
+yVar = p.y{j};
+
+style = dataVars.(yVar).style;
+width = dataVars.(yVar).width;
+label = dataVars.(yVar).label;
+color = p.color;
+
+if strcmp(color,'auto')
+
+fprintf(fid,...
+'plot(%s,%s,''%s'',''LineWidth'',%f,''DisplayName'',''%s'')\n',...
+xVar,yVar,style,width,label);
+
+else
+
+fprintf(fid,...
+'plot(%s,%s,''%s'',''Color'',''%s'',''LineWidth'',%f,''DisplayName'',''%s'')\n',...
+xVar,yVar,style,color,width,label);
+
+end
+
+end
+
+
+%% CUSTOM SIGNALS
+
+if exist('customSignals','var')
+
+for c = 1:length(customSignals)
+
+cs = customSignals{c};
+
+if cs.figNum == p.figNum && cs.row == p.row && cs.col == p.col && cs.pos == p.pos
+
+fprintf(fid,'%% Custom Signal\n');
+fprintf(fid,'%s = %s;\n',cs.name,cs.expression);
+
+fprintf(fid,'plot(%s,%s,''LineWidth'',1.5,''DisplayName'',''%s'')\n',...
+cs.x,cs.name,cs.name);
+
+end
+
+end
+
+end
+
+
+
+%% RELATIVE PLOTS
+
+if exist('relativePlots','var')
+
+for r = 1:length(relativePlots)
+
+rp = relativePlots{r};
+
+if rp.figNum == p.figNum && rp.row == p.row && rp.col == p.col && rp.pos == p.pos
+
+fprintf(fid,'%% Relative Plot\n');
+
+fprintf(fid,'rel_%s_%s = %s - %s;\n',...
+rp.signal,rp.base,rp.signal,rp.base);
+
+fprintf(fid,'plot(%s,rel_%s_%s,''LineWidth'',1.5,''DisplayName'',''%s-%s'')\n',...
+rp.x,rp.signal,rp.base,rp.signal,rp.base);
+
+end
+
+end
+
+end
+
+
+
+%% EVENTS
+
+if exist('events','var')
+
+for e = 1:length(events)
+
+ev = events{e};
+
+fprintf(fid,'xline(%f,''%s'',''%s'');\n',...
+ev.time,ev.style,ev.name);
+
+end
+
+end
+
+
+%% AXIS LABEL
+
+xLabel = dataVars.(xVar).label;
+xUnit  = dataVars.(xVar).unit;
+
+if ~isempty(xUnit)
+
+fprintf(fid,'xlabel(''%s (%s)'')\n',xLabel,xUnit);
+
+else
+
+fprintf(fid,'xlabel(''%s'')\n',xLabel);
+
+end
+
+
+fprintf(fid,'grid on\n\n');
+
+end
+
+
+fprintf(fid,'legend show\n');
+
+fclose(fid);
+
+disp('generated_plot.m created');
+
+end
+
+
+function clearPlots(~,~)
+
+plots = {};
+plotList.Items = {};
+
+end
+
+function updateSignalLists()
+
+names = fieldnames(dataVars);
+
+xList.Items = names;
+yList.Items = names;
+
+end
+
+function tableEdit(src,event)
+
+row = event.Indices(1);
+name = src.Data{row,1};
+
+dataVars.(name).label  = src.Data{row,2};
+dataVars.(name).unit   = src.Data{row,3};
+dataVars.(name).scale  = src.Data{row,4};
+dataVars.(name).offset = src.Data{row,5};
+dataVars.(name).style  = src.Data{row,6};
+dataVars.(name).width  = src.Data{row,7};
+
+end
+
+function filterX(~,~)
+
+names = fieldnames(dataVars);
+
+txt = lower(xSearch.Value);
+
+mask = contains(lower(names),txt);
+
+xList.Items = names(mask);
+
+end
+
+
+function filterY(~,~)
+
+names = fieldnames(dataVars);
+
+txt = lower(ySearch.Value);
+
+mask = contains(lower(names),txt);
+
+yList.Items = names(mask);
+
+end
+
+function addEvent(~,~)
+
+e = struct;
+
+e.name = eventName.Value;
+e.timeVar = eventTime.Value;
+e.value = eventValue.Value;
+
+events{end+1} = e;
+
+end
+
+function addCustomPlot(~,~)
+
+c = struct;
+
+c.expr = customExpr.Value;
+c.label = customLabel.Value;
+
+customPlots{end+1} = c;
+
+end
+function addRelative(~,~)
+
+r = struct;
+
+r.var = relVar.Value;
+r.ref = relRef.Value;
+
+relativePlots{end+1} = r;
+
+end
+
+
+end
