@@ -1,0 +1,931 @@
+function telemetry_final_app()
+% Core data storage
+dataVars = struct;
+plots = {};
+appEvents = {}; 
+layoutMapping = []; % Structural tracker mapping: .type ('plot','event'), .idx (internal index)
+loadedFileName = 'data.mat'; 
+pl="";
+%% MAIN UI WINDOW
+fig = uifigure('Name','Telemetry Analyzer, State Saver & Script Generator','Position',[100 100 1450 850]);
+tg = uitabgroup(fig,'Units','normalized','Position',[0 0 1 1]);
+
+tabImport = uitab(tg,'Title','1. Data Import / Configuration State');
+tabPlot   = uitab(tg,'Title','2. Plot Builder');
+tabEvent  = uitab(tg,'Title','3. Advanced Events');
+
+%% --- 1. DATA IMPORT & CONFIG STATE SAVE/LOAD TAB ---
+igrid = uigridlayout(tabImport,[3 1]);
+igrid.RowHeight = {40,40,'1x'};
+row1 = uigridlayout(igrid,[1 4]);
+uibutton(row1,'Text','Load MAT File Data','ButtonPushedFcn',@loadMat,'BackgroundColor',[0.9 0.9 1],'FontWeight','bold');
+searchBox = uieditfield(row1,'Placeholder','Filter variables...','ValueChangedFcn',@searchVar);
+
+% NEW GUI CONFIGURATION TRACKERS
+uibutton(row1,'Text','💾 Save App Config Layout','ButtonPushedFcn',@saveAppState,'BackgroundColor',[0.85 1 0.85],'FontWeight','bold');
+uibutton(row1,'Text','📂 Load App Config Layout','ButtonPushedFcn',@loadAppState,'BackgroundColor',[1 0.95 0.8],'FontWeight','bold');
+
+row2 = uigridlayout(igrid,[1 2]);
+uibutton(row2,'Text','Global Scale All','ButtonPushedFcn',@applyScale);
+uibutton(row2,'Text','Global Offset All','ButtonPushedFcn',@applyOffset);
+uibutton(row2,...
+    'Text','Add Prefix To Labels',...
+    'ButtonPushedFcn',@addPrefixToLabels);
+
+headers = {'Name','Label','Unit','Scale','Offset','Transpose','Style','Width'};
+table = uitable(igrid,'ColumnName',headers,'ColumnEditable',[false true true true true true true true]);
+table.CellEditCallback = @tableEdit;
+
+%% --- 2. PLOT BUILDER TAB ---
+plotGrid = uigridlayout(tabPlot,[1 3]);
+plotGrid.ColumnWidth = {340,280,'1x'};
+
+signalPanel = uipanel(plotGrid,'Title','Signal Selection & Custom Inputs');
+sigGrid = uigridlayout(signalPanel,[10 2]);
+sigGrid.RowHeight = {22, 22, 22, 22, '1x', '1x', 25, 25, 32};
+
+uilabel(sigGrid,'Text','Search X:');            xSearch = uieditfield(sigGrid,'ValueChangedFcn',@filterX);
+uilabel(sigGrid,'Text','Target X Column:');     xColField = uispinner(sigGrid,'LowerLimit',1,'UpperLimit',50,'Value',1);
+uilabel(sigGrid,'Text','Search Y:');            ySearch = uieditfield(sigGrid,'ValueChangedFcn',@filterY);
+uilabel(sigGrid,'Text','Target Y Column:');     yColField = uispinner(sigGrid,'LowerLimit',1,'UpperLimit',50,'Value',2);
+uilabel(sigGrid,'Text','X-Axis (Time):');       xList = uilistbox(sigGrid);
+uilabel(sigGrid,'Text','Y-Axis Signals:');      yList = uilistbox(sigGrid,'Multiselect','on');
+uilabel(sigGrid,'Text','Custom Expr:');         customExprField = uieditfield(sigGrid,'Value','AOA * 1.5');
+uilabel(sigGrid,'Text','Custom Plot Name:');
+customNameField = uieditfield(sigGrid,'Value','Custom Signal');
+
+cBtn = uibutton(sigGrid,'Text','Add Custom Plot','ButtonPushedFcn',@addCustomPlot,...
+    'BackgroundColor',[0.85 0.95 1],'FontWeight','bold');
+cBtn.Layout.Row = 9; cBtn.Layout.Column = [1 2];
+
+settingsPanel = uipanel(plotGrid,'Title','Plot Style Options');
+setGrid = uigridlayout(settingsPanel,[10 2]);
+uilabel(setGrid,'Text','Plot Type:');           plotType = uidropdown(setGrid,'Items',{'plot','scatter','stairs'});
+uilabel(setGrid,'Text','Subplot Rows:');        subRow = uieditfield(setGrid,'numeric','Value',1); 
+uilabel(setGrid,'Text','Subplot Cols:');        subCol = uieditfield(setGrid,'numeric','Value',1);
+uilabel(setGrid,'Text','Subplot Index:');       subIdx = uieditfield(setGrid,'numeric','Value',1);
+uilabel(setGrid,'Text','Figure # :');            fNum = uieditfield(setGrid,'numeric','Value',1);
+uilabel(setGrid,'Text','Color:');               colorDrop = uidropdown(setGrid,'Items',{'auto','r','g','b','k','m','c','y'});
+gridCheck = uicheckbox(setGrid,'Text','Show Grid','Value',true);
+legendCheck = uicheckbox(setGrid,'Text','Show Legend','Value',true);
+uilabel(setGrid,'Text','Link Group (0=Off):','FontWeight','bold'); 
+linkGroupField = uispinner(setGrid,'LowerLimit',0,'UpperLimit',20,'Value',0);
+
+ctrlPanel = uipanel(plotGrid,'Title','Plot Layout Control');
+ctrlGrid = uigridlayout(ctrlPanel,[6 1]);
+plotList = uilistbox(ctrlGrid);
+uibutton(ctrlGrid,'Text','Add Standard Signal to Layout','ButtonPushedFcn',@addPlot,'FontWeight','bold');
+uibutton(ctrlGrid,'Text','Delete Selected Item','ButtonPushedFcn',@deleteSelected,'BackgroundColor',[1 0.7 0.7],'FontWeight','bold');
+uibutton(ctrlGrid,'Text','PREVIEW FIGURES LIVE','ButtonPushedFcn',@previewPlot,'BackgroundColor',[0.7 0.9 0.7],'FontWeight','bold');
+uibutton(ctrlGrid,'Text','GENERATE M-FILE SCRIPT','ButtonPushedFcn',@exportToScript,'BackgroundColor',[1 0.8 0.4],'FontWeight','bold');
+uibutton(ctrlGrid,'Text','Clear Entire Layout','ButtonPushedFcn',@clearPlots);
+
+%% --- 3. EXPLICIT EVENT CONFIGURATION TAB ---
+eventLayoutGrid = uigridlayout(tabEvent,[1 2]);
+
+ePanel = uipanel(eventLayoutGrid,'Title','Event Logic & Isolation Options');
+eGrid = uigridlayout(ePanel,[10 2]);
+
+uilabel(eGrid,'Text','Event Name Label:');     eName = uieditfield(eGrid,'Value','Stall Burst');
+uilabel(eGrid,'Text','State Expression:');      eEquation = uieditfield(eGrid,'Value','AOA >= 12');
+uilabel(eGrid,'Text','Shading Background Fig #:');eFig = uieditfield(eGrid,'numeric','Value',1);
+uilabel(eGrid,'Text','Shading Subplot Routing:');eSubplotMode = uidropdown(eGrid,'Items',{'Apply to All Subplots','Specific Subplot Index'});
+uilabel(eGrid,'Text','Shading Subplot ID:');   eSubplotIdx = uieditfield(eGrid,'numeric','Value',1);
+uilabel(eGrid,'Text','Shading Color:');         eColor = uidropdown(eGrid,'Items',{'r','g','b','k','m','c'});
+uilabel(eGrid,'Text','Opacity (0 to 1):');      eOpacity = uieditfield(eGrid,'numeric','Value',0.15);
+
+uilabel(eGrid,'Text','Isolate Segments:','FontWeight','bold','FontColor',[0 0.4 0.8]); 
+eIsolateCheck = uicheckbox(eGrid,'Text','Plot Transient Bursts Separately','Value',false);
+uilabel(eGrid,'Text','Time Buffer (\pm seconds):'); eBuffer = uieditfield(eGrid,'numeric','Value',2.0);
+
+uibutton(eGrid,'Text','Parse & Process Events','ButtonPushedFcn',@addArrayLogicEvent,...
+    'BackgroundColor',[0.9 1 0.9],'FontWeight','bold');
+
+infoPanel = uipanel(eventLayoutGrid,'Title','Visual State Shading & Segment Isolation');
+uilabel(infoPanel,'Text',sprintf(['Your logical criteria processes durations rather than floating markers:\n\n',...
+    '• Figure-Per-Event Mode:\n  If enabled, the app scans for all instances where the condition becomes true. To prevent trace overplotting, it creates a completely separate new figure for EACH transient burst while maintaining your exact subplot layout matrix structure natively.']),...
+    'WordWrap','on','Position',[20 320 350 330]);
+
+
+%% --- CORE ARRAYS DATA EXTRACTION ---
+    function data = getProcessedData(varName, explicitCol)
+
+    data = [];
+
+    if ~isfield(dataVars, varName)
+        return;
+    end
+
+    meta = dataVars.(varName);
+    raw  = meta.data;
+
+    if isempty(raw)
+        return;
+    end
+
+    if istable(raw)
+        raw = table2array(raw);
+    end
+
+    if meta.transpose
+        raw = raw';
+    end
+
+    raw = double(raw);
+
+    % Force vector orientation handling
+    if isvector(raw)
+        data = raw(:);
+
+    else
+
+        ncol = size(raw,2);
+
+        if nargin >= 2 && ~isempty(explicitCol)
+
+            explicitCol = min(explicitCol, ncol);
+            data = raw(:, explicitCol);
+
+        else
+
+            % Default behavior
+            if ncol >= 2
+                data = raw(:,2);
+            else
+                data = raw(:,1);
+            end
+        end
+    end
+
+    data = data * meta.scale + meta.offset;
+
+    data = data(:);
+
+    % Remove inf/nan explosions
+    bad = ~isfinite(data);
+    data(bad) = NaN;
+end
+
+    function tData = getTimelineData(varName, explicitCol)
+
+    tData = [];
+
+    if ~isfield(dataVars, varName)
+        return;
+    end
+
+    raw = dataVars.(varName).data;
+
+    if isempty(raw)
+        return;
+    end
+
+    if dataVars.(varName).transpose
+        raw = raw';
+    end
+
+    raw = double(raw);
+
+    if isvector(raw)
+
+        tData = (1:length(raw))';
+
+    else
+
+        ncol = size(raw,2);
+
+        if nargin >= 2 && ~isempty(explicitCol)
+
+            explicitCol = min(explicitCol, ncol);
+            tData = raw(:, explicitCol);
+
+        else
+
+            tData = raw(:,1);
+        end
+    end
+
+    tData = tData(:);
+
+    bad = ~isfinite(tData);
+    tData(bad) = NaN;
+end
+
+%% --- FEATURE: STATE SAVE AND LOAD MECHANICS (SAVING INPUT GUI STATE) ---
+    function saveAppState(~,~)
+        [file, path] = uiputfile('*.mat', 'Save Layout Configuration Layout State', 'saved_layout_config.mat');
+        if isequal(file,0), return; end
+        % Pack app environment metrics safely into structured variables mapping parameters
+        configState = struct();
+        configState.plots = plots;
+        configState.appEvents = appEvents;
+        configState.layoutMapping = layoutMapping;
+        configState.tableData = table.Data;
+        configState.loadedFileName = loadedFileName;
+        
+        save(fullfile(path, file), 'configState');
+        uialert(fig, 'App GUI layout configuration successfully stored!', 'State Stored');
+    end
+
+    function loadAppState(~,~)
+        [file, path] = uigetfile('*.mat', 'Select Layout Configuration Layout State');
+        if isequal(file,0), return; end
+        tmp = load(fullfile(path, file));
+        if ~isfield(tmp, 'configState')
+            uialert(fig, 'Invalid state format selected.', 'Data Incompatible'); return;
+        end
+        
+        % Unpack variables safely to restore GUI inputs layout
+        plots = tmp.configState.plots;
+        appEvents = tmp.configState.appEvents;
+        layoutMapping = tmp.configState.layoutMapping;
+        loadedFileName = tmp.configState.loadedFileName;
+        
+        % Sync listboxes display items
+        plotList.Items = {};
+        for m = 1:length(layoutMapping)
+            mType = layoutMapping(m).type; mIdx = layoutMapping(m).idx;
+            if strcmp(mType, 'plot')
+                p = plots{mIdx};
+                if p.isCustom
+                    plotList.Items{end+1} = sprintf('[Math] F%d(S%d) | %s', p.figNum, p.pos, p.y{1});
+                else
+                    plotList.Items{end+1} = sprintf('[Plot] F%d(S%d) | %s', p.figNum, p.pos, strjoin(p.y,','));
+                end
+            elseif strcmp(mType, 'event')
+                plotList.Items{end+1} = sprintf('[Region] Fig%d: %s', appEvents{mIdx}.figNum, appEvents{mIdx}.name);
+            end
+        end
+        uialert(fig, 'Layout matrix state successfully restored. Click Preview to verify waves.', 'State Restored');
+    end
+
+%% --- LAYOUT BUILDER ASSIGNMENT ENGINE ---
+    function addPlot(~,~)
+        if isempty(xList.Value) || isempty(yList.Value), return; end
+        p = struct('x',xList.Value,'y',{yList.Value},'type',plotType.Value,'row',subRow.Value,'col',subCol.Value,...
+                   'pos',subIdx.Value,'figNum',fNum.Value,'color',colorDrop.Value,'xCol',xColField.Value,'yCol',yColField.Value,...
+                   'linkGroup',linkGroupField.Value,'isCustom',false);
+        plots{end+1} = p; 
+        layoutMapping(end+1).type = 'plot'; layoutMapping(end).idx = length(plots);
+        
+        items = plotList.Items; 
+        items{end+1} = sprintf('[Plot] F%d(S%d) Grp:%d | %s', p.figNum, p.pos, p.linkGroup, strjoin(p.y,','));
+        plotList.Items = items;
+    end
+
+    function addCustomPlot(~,~)
+        exprStr = customExprField.Value;
+        if isempty(exprStr) || isempty(xList.Value), return; end
+        p = struct('x',xList.Value,'y',{{exprStr}},'customName',customNameField.Value,'type',plotType.Value,'row',subRow.Value,'col',subCol.Value,...
+                   'pos',subIdx.Value,'figNum',fNum.Value,'color',colorDrop.Value,'xCol',xColField.Value,...
+                   'linkGroup',linkGroupField.Value,'isCustom',true);
+        plots{end+1} = p;
+        layoutMapping(end+1).type = 'plot'; layoutMapping(end).idx = length(plots);
+        
+        items = plotList.Items; 
+        items{end+1} = sprintf('[Math] F%d(S%d) Grp:%d | %s', p.figNum, p.pos, p.linkGroup, exprStr);
+        plotList.Items = items;
+        previewPlot();
+    end
+
+    function addArrayLogicEvent(~,~)
+        exprStr = eEquation.Value;
+        if isempty(exprStr), return; end
+        
+        ws = struct(); fn = fieldnames(dataVars);
+        for idx = 1:length(fn), ws.(fn{idx}) = getProcessedData(fn{idx}); end
+        
+        try
+            logicalMask = evaluateLogicalExpression(exprStr, ws); logicalMask = double(logicalMask(:)); 
+        catch ME
+            uialert(fig, sprintf('Syntax error:\n%s', ME.message), 'Expression Error'); return;
+        end
+        
+        tData = [];
+        if ~isempty(xList.Value), tData = getTimelineData(xList.Value, xColField.Value); end
+        if isempty(tData), tData = (1:length(logicalMask))'; end
+        
+        minLen = min(length(tData), length(logicalMask)); t = tData(1:minLen); mask = logicalMask(1:minLen);
+        
+        deltaChanges = [0; diff(mask)];
+        onIndices  = find(deltaChanges == 1); offIndices = find(deltaChanges == -1);
+        
+        if mask(1) == 1, onIndices = [1; onIndices]; end
+        if mask(end) == 1 && (isempty(offIndices) || offIndices(end) < onIndices(end)), offIndices = [offIndices; minLen]; end
+        
+        lenPairs = min(length(onIndices), length(offIndices));
+        onTimes  = t(onIndices(1:lenPairs)); offTimes = t(offIndices(1:lenPairs));
+        
+        if isempty(onTimes), uialert(fig, 'No active thresholds seen.', 'No Regions'); return; end
+        
+        ev = struct('name',eName.Value,'expression',exprStr,'onTimes',onTimes,'offTimes',offTimes,...
+                    'figNum',eFig.Value,'subplotMode',eSubplotMode.Value,'subplotIdx',eSubplotIdx.Value,...
+                    'color',eColor.Value,'opacity',eOpacity.Value,...
+                    'isolate',eIsolateCheck.Value,'buffer',eBuffer.Value);
+        appEvents{end+1} = ev;
+        layoutMapping(end+1).type = 'event'; layoutMapping(end).idx = length(appEvents);
+        
+        items = plotList.Items; 
+        items{end+1} = sprintf('[Region] Fig%d: %s', ev.figNum, ev.name);
+        plotList.Items = items; previewPlot();
+    end
+
+   function deleteSelected(~,~)
+
+    val = plotList.Value;
+
+    if isempty(val)
+        return;
+    end
+
+    if iscell(val)
+        val = val{1};
+    end
+
+    items = plotList.Items;
+
+    idxToDelete = find(strcmp(items, val), 1);
+
+    if isempty(idxToDelete)
+        return;
+    end
+
+    itemType = layoutMapping(idxToDelete).type;
+    itemIdx  = layoutMapping(idxToDelete).idx;
+
+    if strcmp(itemType, 'plot')
+
+        plots(itemIdx) = [];
+
+        for m = 1:length(layoutMapping)
+
+            if strcmp(layoutMapping(m).type,'plot') && ...
+               layoutMapping(m).idx > itemIdx
+
+                layoutMapping(m).idx = ...
+                    layoutMapping(m).idx - 1;
+
+            end
+        end
+
+    elseif strcmp(itemType, 'event')
+
+        appEvents(itemIdx) = [];
+
+        for m = 1:length(layoutMapping)
+
+            if strcmp(layoutMapping(m).type,'event') && ...
+               layoutMapping(m).idx > itemIdx
+
+                layoutMapping(m).idx = ...
+                    layoutMapping(m).idx - 1;
+
+            end
+        end
+    end
+
+    layoutMapping(idxToDelete) = [];
+
+    items(idxToDelete) = [];
+
+    plotList.Items = items;
+
+    if isempty(items)
+        plotList.Value = {};
+    else
+        plotList.Value = items{1};
+    end
+
+    previewPlot();
+
+end
+
+%% --- RENDER ENGINE FOR APP PREVIEW ---
+    function previewPlot(~,~)
+        allFigs = [];
+        for idx = 1:length(plots)
+            allFigs(end+1) = plots{idx}.figNum; %#ok<AGROW>
+        end
+        for idx = 1:length(appEvents)
+            allFigs(end+1) = appEvents{idx}.figNum; %#ok<AGROW>
+            if appEvents{idx}.isolate
+                for s = 1:length(appEvents{idx}.onTimes)
+                    allFigs(end+1) = 200 + (idx * 10) + s; %#ok<AGROW>
+                end
+            end
+        end
+        uniqueFigs = unique(allFigs(allFigs > 0));
+        for f = uniqueFigs, if ishandle(f), clf(f); figure(f); else, figure(f); end; end
+
+        linkMap = containers.Map('KeyType','double','ValueType','any');
+        axMap = containers.Map;
+        % Plot Waveforms Loop
+        for k = 1:length(plots)
+            p = plots{k};
+            axKey = sprintf('F%d_R%d_C%d_P%d', ...
+                p.figNum, p.row, p.col, p.pos);
+
+            if isKey(axMap, axKey)
+
+                ax = axMap(axKey);
+
+            else
+
+                figHandle = figure(p.figNum);
+
+                ax = subplot(p.row, p.col, p.pos, ...
+                    'Parent', figHandle);
+
+                hold(ax, 'on');
+
+                grid(ax, 'on');
+
+                set(ax, 'UserData', p.pos);
+
+                axMap(axKey) = ax;
+
+            end
+            xVal = getTimelineData(p.x, p.xCol);
+
+            if p.isCustom
+                ws = struct(); fn = fieldnames(dataVars);
+                for idx = 1:length(fn), ws.(fn{idx}) = getProcessedData(fn{idx}); end
+                try
+                    yV = getProcessedData(yN, p.yCol);
+
+                    xVal = xVal(:);
+                    yV = yV(:);
+
+                    len = min(length(xVal), length(yV));
+                    disp(yN)
+                    disp(size(xVal))
+                    disp(size(yV))
+                    disp([min(xVal) max(xVal)])
+                    disp([min(yV) max(yV)])
+
+                    if len <= 1
+                        continue;
+                    end
+                    args = {'LineWidth', 1.5, 'DisplayName', p.customName};
+                    if ~strcmp(p.color,'auto'), args = [args, 'Color', p.color]; end
+                    hold(ax,'on');
+
+                    plot(ax, xVal(1:len), yV(1:len), ...
+                        'LineWidth',1.5, ...
+                        'DisplayName', p.y{1});
+                catch
+                end
+            else
+                for j = 1:length(p.y)
+                    yN = p.y{j}; yV = getProcessedData(yN, p.yCol); len = min(length(xVal), length(yV));
+                    args = {'LineWidth', dataVars.(yN).width, 'DisplayName', dataVars.(yN).label};
+                    if ~strcmp(p.color,'auto'), args = [args, 'Color', p.color]; end
+                    feval(p.type, ax, xVal(1:len), yV(1:len), dataVars.(yN).style, args{:});
+                end
+            end
+            if gridCheck.Value, grid(ax,'on'); end
+            if legendCheck.Value, legend(ax,'show'); end
+
+            % Build ylabel using displayed legend names
+            legendNames = {};
+
+            if p.isCustom
+
+                legendNames{1} = p.customName;
+
+            else
+
+                for yy = 1:length(p.y)
+
+                    yName = p.y{yy};
+
+                    legendNames{end+1} = dataVars.(yName).label;
+
+                end
+
+            end
+            legendNames=[pl,legendNames];
+
+            ylabel(ax, strjoin(legendNames, ' / '));
+
+            pl=legendNames;
+            if p.linkGroup > 0
+                if isKey(linkMap, p.linkGroup), linkMap(p.linkGroup) = [linkMap(p.linkGroup), ax]; else, linkMap(p.linkGroup) = ax; end
+            end
+        end
+
+        % Inject Shading Regions & Dynamic Figure-Per-Event Set Zoom Engine
+        for k = 1:length(appEvents)
+            ev = appEvents{k}; targetFig = figure(ev.figNum);
+            axList = findobj(targetFig, 'type', 'axes');
+            if isempty(axList), axList = axes('Parent', targetFig); hold(axList, 'on'); end
+            
+            for a = 1:length(axList)
+                currentAx = axList(a);
+                if strcmp(ev.subplotMode, 'Specific Subplot Index')
+                    subUserData = get(currentAx, 'UserData');
+                    if ~isempty(subUserData) && subUserData ~= ev.subplotIdx, continue; end
+                end
+                for t = 1:length(ev.onTimes)
+                    xregion(currentAx, ev.onTimes(t), ev.offTimes(t), 'FaceColor', ev.color, 'FaceAlpha', ev.opacity, 'HandleVisibility', 'off');
+                    text(currentAx, (ev.onTimes(t) + ev.offTimes(t))/2, max(ylim(currentAx))*0.92, ev.name, 'Color', ev.color, 'FontSize', 8, 'FontWeight', 'bold', 'HorizontalAlignment', 'center', 'Clipping', 'on');
+                end
+            end
+            
+            % UPGRADED: Dynamic Figure-Per-Event Subplot Replication Grid Engine
+            if ev.isolate && ~isempty(plots)
+                numSegments = length(ev.onTimes);
+                for s = 1:numSegments
+                    % Create a distinct window for each separate event burst window
+                    activeBurstFigNum = 200 + (k * 10) + s;
+                    zoomFig = figure(activeBurstFigNum); clf(zoomFig);
+                    set(zoomFig, 'Name', sprintf('%s - Burst Set Window #%d', ev.name, s));
+                    
+                    % Replicate the layout structure completely
+                    for pIdx = 1:length(plots)
+                        pRef = plots{pIdx};
+                        zAx = subplot(pRef.row, pRef.col, pRef.pos, 'Parent', zoomFig); hold(zAx, 'on');
+                        
+                        xVal = getTimelineData(pRef.x, pRef.xCol);
+                        for j = 1:length(pRef.y)
+                            yN = pRef.y{j}; yV = getProcessedData(yN, pRef.yCol);
+                            len = min(length(xVal), length(yV));
+                            plot(zAx, xVal(1:len), yV(1:len), 'LineWidth', 1.5, 'DisplayName', dataVars.(yN).label);
+                        end
+                        
+                        % Inject local shading limits and time adjustments
+                        xregion(zAx, ev.onTimes(s), ev.offTimes(s), 'FaceColor', ev.color, 'FaceAlpha', ev.opacity, 'HandleVisibility','off');
+                        xlim(zAx, [ev.onTimes(s) - ev.buffer, ev.offTimes(s) + ev.buffer]);
+                        grid(zAx, 'on'); legend(zAx, 'show');
+                    end
+                end
+            end
+        end
+        
+        % Apply Group Linking Across Arrays
+        activeGroups = keys(linkMap);
+        for g = 1:length(activeGroups)
+            axesArray = linkMap(activeGroups{g}); if length(axesArray) > 1, linkaxes(axesArray, 'x'); end
+        end
+    end
+
+%% --- FEATURE: FIXED STANDALONE EXECUTABLE M-FILE GENERATOR ---
+    function exportToScript(~,~)
+        [file, path] = uiputfile('*.m', 'Generate Analytics Plotting Script', 'plot_telemetry_script.m');
+        if isequal(file,0), return; end
+        fid = fopen(fullfile(path, file), 'w');
+        
+        fprintf(fid, '%%%% Standalone Automated Analytical Visualization Processing Manifest\n');
+        fprintf(fid, '%% Generated on %s\n\n', datestr(now));
+        fprintf(fid, 'clearvars; clc;\n\n%% 1. LOAD DATASET\nmatFileName = ''%s'';\n', loadedFileName);
+        fprintf(fid, 'if exist(matFileName, ''file''), load(matFileName); else, error(''File missing.''); end\n\n');
+        
+        fprintf(fid, '%% 2. TRANSLATE & STRIP STRUCT WRAPPERS\n');
+
+        fn = fieldnames(dataVars);
+
+        for i = 1:length(fn)
+
+            internalName = fn{i};
+
+            sourcePath = dataVars.(internalName).sourcePath;
+
+            exportName = matlab.lang.makeValidName(sourcePath);
+
+            fprintf(fid, 'raw_%s = %s;\n', exportName, sourcePath);
+
+            if dataVars.(internalName).transpose
+                fprintf(fid, 'raw_%s = raw_%s'';\n', exportName, exportName);
+            end
+
+            fprintf(fid, '\n');
+
+        end
+        
+        fprintf(fid, '%% 3. BUILD RENDERS AND LAYOUT SUBPLOTS\n');
+        allFigs = []; if ~isempty(plots), allFigs = [allFigs, cellfun(@(x) x.figNum, plots)]; end
+        uniqueFigs = unique(allFigs);
+        
+        for f = uniqueFigs
+            fprintf(fid, 'figure(%d); clf; clear ax;\n', f);
+            for k = 1:length(plots)
+                p = plots{k}; if p.figNum ~= f, continue; end
+                safeX = strrep(p.x, '.', '_');
+                fprintf(fid, 'ax(%d) = subplot(%d, %d, %d); hold(ax(%d), ''on'');\n', p.pos, p.row, p.col, p.pos, p.pos);
+                fprintf(fid, 'set(ax(%d), ''UserData'', %d);\n', p.pos, p.pos);
+                fprintf(fid, '  if size(raw_%s, 2) >= %d, t_vec_%d = double(raw_%s(:, %d)); else, t_vec_%d = (1:length(raw_%s))''; end\n', safeX, p.xCol, k, safeX, p.xCol, k, safeX);
+
+                if p.isCustom
+
+                    fprintf(fid, '  try\n');
+
+                    for j = 1:length(fn)
+
+                        srcPath = dataVars.(fn{j}).sourcePath;
+                        sV = matlab.lang.makeValidName(srcPath);
+
+                        fprintf(fid, ...
+                            '    if size(raw_%s,2)>=2, %s = double(raw_%s(:,2)); else, %s = double(raw_%s); end\n', ...
+                            sV, sV, sV, sV, sV);
+
+                    end
+
+                    fprintf(fid, '    custom_y = %s;\n', p.y{1});
+
+                    fprintf(fid, '    custom_y = custom_y(:);\n');
+                    fprintf(fid, '    t_vec_%d = t_vec_%d(:);\n', k, k);
+
+                    fprintf(fid, '    lenPlot = min(length(t_vec_%d), length(custom_y));\n', k);
+
+                    fprintf(fid, ...
+                        '    plot(ax(%d), t_vec_%d(1:lenPlot), custom_y(1:lenPlot), ''LineWidth'', 1.5, ''DisplayName'', "%s");\n', ...
+                        p.pos, k,p.customName);
+
+                    fprintf(fid, ...
+                        '  catch ME\n    warning(''Custom expression error: %%s'', ME.message);\n  end\n');
+
+                else
+                    for j = 1:length(p.y)
+                        yN = p.y{j}; safeY = strrep(yN, '.', '_');
+                        fprintf(fid, '  if size(raw_%s, 2) >= %d, sig_%s = double(raw_%s(:, %d)); else, sig_%s = double(raw_%s); end\n', safeY, p.yCol, safeY, safeY, p.yCol, safeY, safeY);
+                        fprintf(fid, '  sig_%s = sig_%s * %g + %g;\n', safeY, safeY, dataVars.(yN).scale, dataVars.(yN).offset);
+                        fprintf(fid, '  sig_%s = sig_%s(:);\n', safeY, safeY);
+                        fprintf(fid, '  t_vec_%d = t_vec_%d(:);\n', k, k);
+
+                        fprintf(fid, ...
+                            '  lenPlot = min(length(t_vec_%d), length(sig_%s));\n', ...
+                            k, safeY);
+
+                        fprintf(fid, ...
+                            '  plot(ax(%d), t_vec_%d(1:lenPlot), sig_%s(1:lenPlot), ''LineWidth'', 1.5, ''DisplayName'', ''%s'');\n', ...
+                            p.pos, k, safeY, dataVars.(yN).label);
+                    end
+                end
+                fprintf(fid, '  grid(ax(%d), ''on''); legend(ax(%d), ''show'');\n', p.pos, p.pos);
+
+                % Build ylabel text
+                if ~p.isCustom
+
+                    yLabels = {};
+
+                    for yy = 1:length(p.y)
+
+                        yLabels{end+1} = dataVars.(p.y{yy}).label;
+
+                    end
+
+                    yText = strjoin(yLabels, ' / ');
+
+                else
+
+                    yText = 'Custom Expression';
+
+                end
+
+                fprintf(fid, '  ylabel(ax(%d), ''%s'');\n', p.pos, yText);
+            end
+            
+            if ~isempty(appEvents)
+                for k = 1:length(appEvents)
+                    ev = appEvents{k}; if ev.figNum ~= f, continue; end
+                    fprintf(fid, '  onTimes_%d = [%s]; offTimes_%d = [%s];\n', k, num2str(ev.onTimes(:)'), k, num2str(ev.offTimes(:)'));
+                    if strcmp(ev.subplotMode, 'Apply to All Subplots')
+                        fprintf(fid, '  target_axes = ax(isgraphics(ax));\n');
+                    else
+                        fprintf(fid, '  if length(ax) >= %d, target_axes = ax(%d); else, target_axes = gca; end\n', ev.subplotIdx, ev.subplotIdx);
+                    end
+                    fprintf(fid, '  for ax_idx = 1:length(target_axes)\n      c_ax = target_axes(ax_idx);\n');
+                    fprintf(fid, '      for i = 1:length(onTimes_%d)\n', k);
+                    fprintf(fid, '          xregion(c_ax, onTimes_%d(i), offTimes_%d(i), ''FaceColor'', ''%s'', ''FaceAlpha'', %g, ''HandleVisibility'', ''off'');\n', k, k, ev.color, ev.opacity);
+                    fprintf(fid, '      end\n  end\n');
+                    
+                    % FIXED COMPILER SCRIPT FOR MULTI-SUBPLOT CASCADE REPLICATION
+                    if ev.isolate && ~isempty(plots)
+                        fprintf(fid, '\n  %%%% --- REPLICATED FIGURE-PER-EVENT STRUCT SUBPLOT CASCADES ---\n');
+                        fprintf(fid, '  for s = 1:length(onTimes_%d)\n', k);
+                        fprintf(fid, '      zFig = figure(200 + (%d * 10) + s); clf(zFig);\n', k);
+                        fprintf(fid, '      set(zFig, ''Name'', sprintf(''%s - Active Burst Set Window #%%d'', s));\n', ev.name);
+                        
+                        for pIdx = 1:length(plots)
+                            refP = plots{pIdx}; safeRefX = strrep(refP.x, '.', '_');
+                            fprintf(fid, '      zAx = subplot(%d, %d, %d, ''Parent'', zFig); hold(zAx, ''on'');\n', refP.row, refP.col, refP.pos);
+                            fprintf(fid, '      if size(raw_%s, 2) >= %d, t_v = double(raw_%s(:, %d)); else, t_v = (1:length(raw_%s))''; end\n', safeRefX, refP.xCol, safeRefX, refP.xCol, safeRefX);
+                            for j = 1:length(refP.y)
+                                yN = refP.y{j}; safeY = strrep(yN, '.', '_');
+                                fprintf(fid, '      if size(raw_%s, 2) >= %d, s_v = double(raw_%s(:, %d)); else, s_v = double(raw_%s); end\n', safeY, refP.yCol, safeY, refP.yCol, safeY);
+                                fprintf(fid, '      plot(zAx, t_v, s_v, ''LineWidth'', 1.5, ''DisplayName'', [ ''%s'' '' (Zoom)'' ]);\n', dataVars.(yN).label);
+                            end
+                            fprintf(fid, '      xregion(zAx, onTimes_%d(s), offTimes_%d(s), ''FaceColor'', ''%s'', ''FaceAlpha'', %g);\n', k, k, ev.color, ev.opacity);
+                            fprintf(fid, '      xlim(zAx, [onTimes_%d(s) - %g, offTimes_%d(s) + %g]);\n', k, ev.buffer, k, ev.buffer);
+                            fprintf(fid, '      grid(zAx, ''on''); legend(zAx, ''show'');\n');
+                        end
+                        fprintf(fid, '  end\n\n');
+                    end
+                end
+            end
+        end
+        
+        if ~isempty(plots)
+            fprintf(fid, '\n%% 4. SELECTIVE AXIS GROUP LINKING\n');
+            allGroups = cellfun(@(x) x.linkGroup, plots); uGroups = unique(allGroups(allGroups > 0));
+            for g = uGroups
+                fprintf(fid, 'axGroup_%d = [];\n', g);
+                for k = 1:length(plots)
+                    if plots{k}.linkGroup == g
+                        fprintf(fid, 'axTemp = findobj(%d, ''type'', ''axes'', ''UserData'', %d);\n', plots{k}.figNum, plots{k}.pos);
+                        fprintf(fid, 'if ~isempty(axTemp), axGroup_%d = [axGroup_%d, axTemp(1)]; end\n', g, g);
+                    end
+                end
+                fprintf(fid, 'if length(axGroup_%d) > 1, linkaxes(axGroup_%d, ''x''); end\n\n', g, g);
+            end
+        end
+        
+        fclose(fid); uialert(fig, 'M-File Generated successfully with persistent multi-subplot segmentation grids!', 'Export Complete');
+    end
+
+%% --- MAT STRUCT RESOLUTION HANDLERS ---
+    function loadMat(~,~)
+    [file,path] = uigetfile('*.mat','Select Dataset File');
+    if isequal(file,0), return; end
+
+    loadedFileName = file;
+    dataVars = struct;
+
+    S = load(fullfile(path,file));
+
+    % Recursively scan everything
+    dataVars = scanStructRecursive(S, '');
+
+    refreshTable();
+    updateSignalLists();
+    end
+
+function outStruct = scanStructRecursive(inStruct, prefix)
+
+    outStruct = struct;
+
+    fields = fieldnames(inStruct);
+
+    for i = 1:length(fields)
+
+        fname = fields{i};
+        value = inStruct.(fname);
+
+        % Build hierarchical name
+        if isempty(prefix)
+            fullName = fname;
+        else
+            fullName = [prefix '.' fname];
+        end
+
+        % Safe MATLAB struct field
+        safeName = matlab.lang.makeValidName(fullName);
+
+        if isstruct(value)
+
+            tempStruct = scanStructRecursive(value, fullName);
+
+            tf = fieldnames(tempStruct);
+
+            for k = 1:length(tf)
+                outStruct.(tf{k}) = tempStruct.(tf{k});
+            end
+
+        else
+
+            outStruct.(safeName) = struct( ...
+                'data', value, ...
+                'sourcePath', fullName, ...
+                'label', fname, ...
+                'unit', '', ...
+                'scale', 1, ...
+                'offset', 0, ...
+                'transpose', false, ...
+                'style', '-', ...
+                'width', 1.5);
+
+        end
+    end
+end
+
+    function refreshTable()
+        n = fieldnames(dataVars); d = cell(length(n),8);
+        for i = 1:length(n), v = dataVars.(n{i}); d(i,:) = { v.label,v.label, v.unit, v.scale, v.offset, v.transpose, v.style, v.width}; end
+        table.Data = d;
+    end
+
+    function updateSignalLists()
+
+    n = fieldnames(dataVars);
+
+    labels = cell(size(n));
+
+    for i = 1:length(n)
+        labels{i} = dataVars.(n{i}).label;
+    end
+
+    xList.Items = labels;
+    yList.Items = labels;
+
+    % IMPORTANT:
+    xList.ItemsData = n;
+    yList.ItemsData = n;
+end
+
+    function tableEdit(~,~), d = table.Data; for i = 1:size(d,1), safeFields = fieldnames(dataVars);
+n = safeFields{i}; dataVars.(n).label=d{i,2}; dataVars.(n).unit=d{i,3}; dataVars.(n).scale=d{i,4}; dataVars.(n).offset=d{i,5}; dataVars.(n).transpose=d{i,6}; dataVars.(n).style=d{i,7}; dataVars.(n).width=d{i,8}; end; end
+   
+    function filterX(~,~)
+
+    n = fieldnames(dataVars);
+
+    labels = {};
+    vals = {};
+
+    for i = 1:length(n)
+
+        lbl = dataVars.(n{i}).label;
+
+        if contains(lower(lbl), lower(xSearch.Value))
+            labels{end+1} = lbl;
+            vals{end+1} = n{i};
+        end
+    end
+
+    xList.Items = labels;
+    xList.ItemsData = vals;
+    end
+
+function filterY(~,~)
+
+    n = fieldnames(dataVars);
+
+    labels = {};
+    vals = {};
+
+    for i = 1:length(n)
+
+        lbl = dataVars.(n{i}).label;
+
+        if contains(lower(lbl), lower(ySearch.Value))
+            labels{end+1} = lbl;
+            vals{end+1} = n{i};
+        end
+    end
+
+    yList.Items = labels;
+    yList.ItemsData = vals;
+end
+    function applyScale(~,~), s = table.Data{1,4}; ns = fieldnames(dataVars); for i=1:length(ns), dataVars.(ns{i}).scale = s; end; refreshTable(); end
+    function applyOffset(~,~), o = table.Data{1,5}; ns = fieldnames(dataVars); for i=1:length(ns), dataVars.(ns{i}).offset = o; end; refreshTable(); end
+    function clearPlots(~,~), plots={}; appEvents={}; layoutMapping=[]; plotList.Items={}; clf; end
+    function searchVar(~,~), k = lower(searchBox.Value); ns = fieldnames(dataVars); tD = {}; for i=1:length(ns), if contains(lower(ns{i}),k), v=dataVars.(ns{i}); tD(end+1,:)={ns{i},v.label,v.unit,v.scale,v.offset,v.transpose,v.style,v.width}; end; end; table.Data=tD; end
+end
+
+%% --- UN-NESTED LOCAL UTILITY ENGINE ---
+function mask = evaluateLogicalExpression(exprStr, wsStruct)
+    fn = fieldnames(wsStruct);
+    for idx = 1:length(fn)
+        eval([fn{idx} ' = wsStruct.' fn{idx} ';']);
+    end
+    mask = eval(exprStr);
+end
+
+function addPrefixToLabels(~,~)
+
+    answer = inputdlg('Enter prefix:','Prefix',1,{'SIM_'});
+
+    if isempty(answer)
+        return;
+    end
+
+    prefix = answer{1};
+
+    selectedRows = table.Selection;
+
+    if isempty(selectedRows)
+
+        uialert(fig,...
+            'Select rows in table first.',...
+            'No Selection');
+
+        return;
+    end
+
+    rows = unique(selectedRows(:,1));
+
+    d = table.Data;
+
+    for i = 1:length(rows)
+
+        r = rows(i);
+
+        d{r,2} = [prefix d{r,2}];
+
+    end
+
+    table.Data = d;
+
+    tableEdit();
+
+end
