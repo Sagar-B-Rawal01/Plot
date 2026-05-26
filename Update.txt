@@ -1,0 +1,85 @@
+Then your exporter should generate ONLY the variables actually used by:
+
+plots
+
+custom plots
+
+events
+
+derived signals dependencies
+
+That is the correct design.
+
+Current exporter exports everything in DataVars, which becomes huge.
+
+Better approach:
+
+What exporter should do
+
+Export ONLY signals used in:
+
+Standard plots
+
+p.x p.y 
+
+Custom plot expressions
+
+p.xExp p.yExp 
+
+Event logic
+
+e.logic 
+
+Derived signals
+
+dependencies recursively
+
+Example
+
+If user plots only:
+
+sim.t speed aoa 
+
+then generated script becomes:
+
+t = sim.t; speed = sim.vx * 3.6; aoa = sim.alpha'; 
+
+NOT entire MAT database.
+
+Correct architecture
+
+Add this helper function INSIDE class:
+
+function used = collectUsedSignals(obj) used = {}; % ===================================================== % Standard plots % ===================================================== for i = 1:length(obj.Plots) p = obj.Plots{i}; if p.isCus expr = [p.xExp ' ' p.yExp]; toks = regexp(expr, ... '[A-Za-z]\w*', ... 'match'); used = [used toks]; else used{end+1} = p.x; used = [used p.y]; end end % ===================================================== % Events % ===================================================== for i = 1:length(obj.Events) e = obj.Events{i}; toks = regexp(e.logic, ... '[A-Za-z]\w*', ... 'match'); used = [used toks]; end % ===================================================== % Keep only valid DataVars % ===================================================== fn = fieldnames(obj.DataVars); used = intersect(unique(used), fn); end 
+
+Then inside exporter replace:
+
+fn = fieldnames(obj.DataVars); 
+
+WITH:
+
+fn = obj.collectUsedSignals(); 
+
+Now exported script becomes compact and intelligent.
+
+It exports ONLY variables actually needed.
+
+Transpose / Scale / Offset
+
+Those are already preserved:
+
+if m.transpose sig = sig'; end sig = sig * scale + offset; 
+
+So exported script recreates exact plotted signals.
+
+Result
+
+Instead of gigantic:
+
+gyro accel temp pressure gps unused1 unused2 unused3 ... 
+
+you get:
+
+t speed aoa nz 
+
+only.
