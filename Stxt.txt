@@ -1,0 +1,198 @@
+Yes. Looking at your code, the biggest issue is that DataVars uses a key generated from:
+
+safeName = matlab.lang.makeValidName(fullPath);
+
+If you load a second MAT file, signals with the same path overwrite the first file's signals.
+
+Simple solution: add a file prefix
+
+When loading a MAT file, create a unique prefix from the filename.
+
+For example:
+
+flight1.mat
+flight2.mat
+
+becomes:
+
+flight1_sim_t
+flight1_sim_vx
+
+flight2_sim_t
+flight2_sim_vx
+
+Modify actionLoadMat
+
+After:
+
+obj.LoadedFile = file;
+
+add:
+
+[filePrefix,~,~] = fileparts(file);
+
+filePrefix = matlab.lang.makeValidName(filePrefix);
+
+Then call:
+
+obj.parseStructRecursive(rawStruct,'',filePrefix);
+
+instead of:
+
+obj.parseStructRecursive(rawStruct,'');
+
+
+---
+
+Modify parseStructRecursive signature
+
+Change:
+
+function parseStructRecursive(obj,inStruct,prefix)
+
+to:
+
+function parseStructRecursive(obj,inStruct,prefix,filePrefix)
+
+
+---
+
+Recursive call
+
+Change:
+
+obj.parseStructRecursive(val,fullPath);
+
+to:
+
+obj.parseStructRecursive(val,fullPath,filePrefix);
+
+
+---
+
+Signal key generation
+
+Replace:
+
+safeName = matlab.lang.makeValidName(fullPath);
+
+with:
+
+safeName = matlab.lang.makeValidName( ...
+    [filePrefix '_' fullPath] );
+
+Now signals from different MAT files cannot collide.
+
+
+---
+
+Better labels
+
+You said you already allow changing labels and units.
+
+For display, I'd keep:
+
+label = tokens{end};
+
+so the UI still shows:
+
+t
+vx
+vy
+alpha
+
+instead of:
+
+flight1_sim_vx
+
+The long prefixed name is only the internal key.
+
+
+---
+
+Store source MAT file
+
+Add one extra field:
+
+'matFile', filePrefix
+
+Example:
+
+obj.DataVars.(safeName) = struct( ...
+    'data', val,...
+    'sourcePath', fullPath,...
+    'matFile', filePrefix,...
+    ...
+);
+
+This lets you later:
+
+filter by file
+
+color by file
+
+export only one file
+
+compare runs
+
+
+
+---
+
+Change LoadedFile
+
+Right now:
+
+LoadedFile char
+
+stores only one file.
+
+Change to:
+
+LoadedFiles cell
+
+Initialize:
+
+obj.LoadedFiles = {};
+
+Then when loading:
+
+obj.LoadedFiles{end+1} = fullfile(path,file);
+
+Now you can load:
+
+flight1.mat
+flight2.mat
+flight3.mat
+
+without losing information.
+
+
+---
+
+Nice UI improvement
+
+Add a column:
+
+'File'
+
+before Label:
+
+{'Key','File','Label','Unit',...}
+
+and populate with:
+
+v.matFile
+
+Then table shows:
+
+File	Label
+
+Flight1	Speed
+Flight2	Speed
+Flight3	Speed
+
+
+which makes comparing runs much easier.
+
+This is a relatively small change to your current architecture and works without rewriting the plotting, events, extraction, or export systems.
