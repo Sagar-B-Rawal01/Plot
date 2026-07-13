@@ -1,0 +1,1352 @@
+classdef TelemetryWorkbenchv3 < handle
+    % TELEMETRYWORKBENCH - Pro Advanced Telemetry & Logic Analyzer
+    
+    properties (Access = public)
+        DataVars struct
+        Plots cell
+        Events cell
+        LoadedFiles cell
+        LoadedFile char
+        SelectedRows double
+        EvalStack cell
+        ExtState struct
+        
+        SelectedXSignals cell
+        SelectedYSignals cell
+        SelectedYScales double
+        SelectedYStyles cell
+        SelectedYLeg logical
+        
+        SavedDerivedLogic struct
+        SavedEventLogic struct
+        UI struct
+    end
+    
+    methods
+        function obj = TelemetryWorkbenchv3()
+            obj.DataVars = struct();
+            obj.Plots = {};
+            obj.Events = {};
+            obj.LoadedFiles = {};
+            obj.SelectedRows = [];
+            obj.EvalStack = {};
+            
+            obj.SelectedXSignals = {};
+            obj.SelectedYSignals = {};
+            obj.SelectedYScales = [];
+            obj.SelectedYStyles = {};
+            obj.SelectedYLeg = [];
+            
+            obj.SavedDerivedLogic = struct();
+            obj.SavedEventLogic = struct();
+            obj.ExtState = struct('targetPlotId', '', 'startX', NaN, 'endX', NaN, 'hStart', [], 'hEnd', []);
+            obj.UI = struct('activeEditId', '');
+            
+            obj.buildApplicationUI();
+            obj.logMessage('SYSTEM', 'Workbench initialized. Ready for telemetry.');
+        end
+        
+        function delete(obj)
+            if isvalid(obj) && isfield(obj.UI, 'Fig') && isvalid(obj.UI.Fig)
+                delete(obj.UI.Fig);
+            end
+        end
+    end
+    
+    methods (Access = private)
+        function buildApplicationUI(obj)
+            obj.UI.Fig = uifigure('Name', 'Telemetry Workbench Pro V2', 'Units', 'normalized', 'Position', [0.02 0.05 0.96 0.9]);
+            mGrid = uigridlayout(obj.UI.Fig, [2 1]);
+            mGrid.RowHeight = {'1x', 140};
+            
+            tg = uitabgroup(mGrid);
+            tData = uitab(tg, 'Title', '1. Data Manager');
+            tPlot = uitab(tg, 'Title', '2. Plot Builder');
+            tEvent = uitab(tg, 'Title', '3. Event Engine & Data Tips');
+            tExtract = uitab(tg, 'Title', '4. Segment Extraction');
+            
+            obj.UI.Console = uitextarea(mGrid, 'Editable', 'off', 'FontName', 'Consolas', ...
+                'BackgroundColor', [0.1 0.1 0.1], 'FontColor', [0.2 0.9 0.2]);
+            
+            obj.buildDataTab(tData);
+            obj.buildPlotTab(tPlot);
+            obj.buildEventTab(tEvent);
+            obj.buildExtractTab(tExtract);
+        end
+        
+        function buildDataTab(obj, tab)
+            g = uigridlayout(tab, [3 1]);
+            g.RowHeight = {50, 140, '1x'};
+            
+            r1 = uigridlayout(g, [1 8]); % 8 columns to fit the new Validate button
+            r1.Padding = [0 0 0 0];
+            
+            uibutton(r1, 'Text', '📂 Load MAT', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@obj.actionLoadMat, 'Loading data...'));
+            obj.UI.txtSearch = uieditfield(r1, 'text', 'Placeholder', 'Filter channels...', 'ValueChangedFcn', @(~,~)obj.safeExecute(@obj.actionRefreshTable, ''));
+            uibutton(r1, 'Text', '💾 Save State', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@obj.actionSaveState, 'Saving state...'));
+            uibutton(r1, 'Text', '🔄 Load State', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@obj.actionLoadState, 'Loading state...'));
+            
+            uibutton(r1, 'Text', '✅ Validate State', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@obj.actionValidateState, 'Validating...'), 'BackgroundColor', [0.8 1 0.8]);
+            
+            uibutton(r1, 'Text', '❌ Clear Selected', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@obj.clear_DataVars, 'Clearing variables...'));
+            uibutton(r1, 'Text', '🧹 Reset Session', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@obj.clear_loadfile, 'Resetting session data...'));
+            uibutton(r1, 'Text', '📊 Calc Stats', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@obj.actionCalculateStats, 'Computing metrics...'), 'BackgroundColor', [0.8 0.8 1]);
+            
+            pnlDeriv = uipanel(g, 'Title', 'Derived Signal Engine (Regex Evaluator & Logic Library)');
+            gd = uigridlayout(pnlDeriv, [3 4]);
+            gd.RowHeight = {25, 25, 25};
+            
+            uilabel(gd, 'Text', 'Name:'); obj.UI.derName = uieditfield(gd, 'Value', 'math_sig');
+            uilabel(gd, 'Text', 'Math (use Keys):'); obj.UI.derExpr = uieditfield(gd, 'Value', 'R1_Speed * 0.277');
+            uilabel(gd, 'Text', 'Unit:'); obj.UI.derUnit = uieditfield(gd, 'Value', 'm/s');
+            
+            uilabel(gd, 'Text', 'Saved Logics:'); obj.UI.derSaved = uidropdown(gd, 'Items', {'-- None --'}, 'ValueChangedFcn', @(~,~)obj.safeExecute(@obj.actionLoadDerivedLogic, ''));
+            
+            bGrid = uigridlayout(gd, [1 2], 'Padding', [0 0 0 0]); bGrid.Layout.Column = [3 4];
+            uibutton(bGrid, 'Text', '💾 Save Logic', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@obj.actionSaveDerivedLogic, 'Saving logic...'));
+            uibutton(bGrid, 'Text', '⚙️ Create Signal', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@obj.actionCreateDerived, 'Creating signal...'), 'BackgroundColor', [0.8 1 0.8]);
+            
+            pnlTab = uipanel(g, 'Title', 'Signal Metadata');
+            gt = uigridlayout(pnlTab, [2 1]);
+            gt.RowHeight = {30, '1x'};
+            
+            rt = uigridlayout(gt, [1 3]);
+            rt.Padding = [0 0 0 0];
+            uibutton(rt, 'Text', 'Apply Offset', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@()obj.actionApplyModifier('offset'), 'Offsetting...'));
+            uibutton(rt, 'Text', 'Apply Prefix', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@obj.actionApplyPrefix, 'Prefixing...'));
+            uibutton(rt, 'Text', 'Reset Modifiers', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@obj.actionResetModifiers, 'Resetting...'));
+            
+            headers = {'Key', 'Label', 'Unit', 'Size', 'Offset', 'Transpose', 'IsDerived'};
+            obj.UI.dataTable = uitable(gt, 'ColumnName', headers, 'CellSelectionCallback', @(~,ev)obj.actionTableSelect(ev), 'CellEditCallback', @(~,ev)obj.safeExecute(@()obj.actionTableEdit(ev), ''));
+            obj.UI.dataTable.ColumnEditable = [false true true false true true false];
+        end
+        
+        function buildPlotTab(obj, tab)
+            g = uigridlayout(tab, [1 3]);
+            g.ColumnWidth = {360, 420, '1x'};
+            
+            pnlSig = uipanel(g, 'Title', 'Signal Selection');
+            gs = uigridlayout(pnlSig, [11 2]);
+            gs.RowHeight = {25, '1x', 25, '1x', 25, 80, 25, 25, 25, 25, 25};
+            
+            uilabel(gs, 'Text', 'Default X-Signal:'); obj.UI.pltXSearch = uieditfield(gs, 'ValueChangedFcn', @(~,~)obj.safeExecute(@()obj.actionFilterList('x'), ''));
+            obj.UI.pltXList = uilistbox(gs); obj.UI.pltXList.Layout.Column = [1 2];
+            
+            uilabel(gs, 'Text', 'Y-Signals:'); obj.UI.pltYSearch = uieditfield(gs, 'ValueChangedFcn', @(~,~)obj.safeExecute(@()obj.actionFilterList('y'), ''));
+            
+            styleOpts = {'-', '--', ':', '-.', 'none', 'o', '.', 'x', '-o'};
+            obj.UI.pltYTable = uitable(gs, 'ColumnName', {'Sel', 'Y-Signal', 'X-Signal', 'Scale', 'Style', 'Meta/Leg'}, ...
+                'ColumnWidth', {30, 'auto', 'auto', 50, 50, 60}, 'ColumnEditable', [true false true true true true], ...
+                'ColumnFormat', {'logical', 'char', 'char', 'numeric', styleOpts, 'logical'}, ...
+                'CellEditCallback', @(~,ev)obj.actionYTableEdit(ev));
+            obj.UI.pltYTable.Layout.Column = [1 2];
+            
+            uilabel(gs, 'Text', 'Z-Signal (3D):'); obj.UI.pltZSearch = uieditfield(gs, 'ValueChangedFcn', @(~,~)obj.safeExecute(@()obj.actionFilterList('z'), ''));
+            obj.UI.pltZList = uilistbox(gs, 'Enable', 'off'); obj.UI.pltZList.Layout.Column = [1 2];
+            
+            uilabel(gs, 'Text', 'C-Signal (Color Map):'); obj.UI.pltCSearch = uieditfield(gs, 'ValueChangedFcn', @(~,~)obj.safeExecute(@()obj.actionFilterList('c'), ''));
+            obj.UI.pltCList = uilistbox(gs, 'Enable', 'off'); obj.UI.pltCList.Layout.Column = [1 2];
+
+            uilabel(gs, 'Text', 'S-Signal (State Labels):'); obj.UI.pltSSearch = uieditfield(gs, 'ValueChangedFcn', @(~,~)obj.safeExecute(@()obj.actionFilterList('s'), ''));
+            obj.UI.pltSList = uilistbox(gs, 'Enable', 'off'); obj.UI.pltSList.Layout.Column = [1 2];
+            
+            obj.UI.pltEn4D = uicheckbox(gs, 'Text', 'Enable C & S Mapping (Surface)', 'ValueChangedFcn', @(~,ev)obj.actionToggleC(ev)); obj.UI.pltEn4D.Layout.Column = [1 2];
+            
+            pnlSty = uipanel(g, 'Title', 'Subplot Settings');
+            gst = uigridlayout(pnlSty, [15 2]);
+            gst.RowHeight = num2cell(repmat(22, 1, 15));
+            
+            uilabel(gst, 'Text', 'Group No.:'); obj.UI.pltGroup = uispinner(gst, 'Value', 1, 'LowerLimit', 1);
+            uilabel(gst, 'Text', 'Target Fig #:'); obj.UI.pltFig = uispinner(gst, 'Value', 1, 'LowerLimit', 1);
+            uilabel(gst, 'Text', 'Rows / Cols:');
+            rGrid = uigridlayout(gst, [1 2], 'Padding', [0 0 0 0]);
+            obj.UI.pltRow = uispinner(rGrid, 'Value', 1, 'LowerLimit', 1); obj.UI.pltCol = uispinner(rGrid, 'Value', 1, 'LowerLimit', 1);
+            uilabel(gst, 'Text', 'Position:'); obj.UI.pltPos = uispinner(gst, 'Value', 1, 'LowerLimit', 1);
+            
+            uilabel(gst, 'Text', 'Subplot Title:'); obj.UI.pltTitle = uieditfield(gst, 'Value', '', 'Placeholder', 'Auto TeX Colored');
+            uilabel(gst, 'Text', 'X-Label:'); obj.UI.pltXLabel = uieditfield(gst, 'Value', '');
+            uilabel(gst, 'Text', 'Y-Label:'); obj.UI.pltYLabel = uieditfield(gst, 'Value', '');
+            
+            uilabel(gst, 'Text', 'Line Color:'); obj.UI.pltColor = uidropdown(gst, 'Items', {'auto', 'r', 'g', 'b', 'y', 'm', 'c', 'k'});
+            uilabel(gst, 'Text', 'Line Width:'); obj.UI.pltWidth = uispinner(gst, 'Value', 1.5, 'Step', 0.5, 'LowerLimit', 0.1);
+            uilabel(gst, 'Text', 'Fallback Style (3D):'); obj.UI.pltLStyle = uidropdown(gst, 'Items', {'-', '--', ':', '-.', 'none', 'o', '.', 'x', '-o'});
+            
+            uilabel(gst, 'Text', 'Link Grp ID:'); obj.UI.pltLink = uispinner(gst, 'Value', 0, 'LowerLimit', 0);
+            
+            cbGrid = uigridlayout(gst, [1 3], 'Padding', [0 0 0 0]);
+            cbGrid.Layout.Column = [1 2];
+            obj.UI.pltGrid = uicheckbox(cbGrid, 'Text', 'Grid', 'Value', true);
+            obj.UI.pltLeg = uicheckbox(cbGrid, 'Text', 'Legend', 'Value', false);
+            obj.UI.pltEvt = uicheckbox(cbGrid, 'Text', 'Events', 'Value', true);
+            
+            obj.UI.pltEn3D = uicheckbox(gst, 'Text', 'Enable 3D Z-Axis', 'ValueChangedFcn', @(~,ev)obj.actionToggle3D(ev)); obj.UI.pltEn3D.Layout.Column = [1 2];
+            
+            pnlMan = uipanel(g, 'Title', 'Plot Manifest');
+            gm = uigridlayout(pnlMan, [7 1]);
+            gm.RowHeight = {'1x', 30, 30, 30, 30, 30, 30};
+            
+            obj.UI.plotTree = uitree(gm, 'Multiselect', 'on');
+            uibutton(gm, 'Text', '➕ Add / Update Plot', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@obj.actionAddPlot, 'Configuring plot...'));
+            
+            btnGrid = uigridlayout(gm, [1 2], 'Padding', [0 0 0 0]);
+            uibutton(btnGrid, 'Text', '🗑️ Delete Selected', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@obj.actionDeleteManifestItem, 'Item deleted.'));
+            uibutton(btnGrid, 'Text', '✏️ Edit Selected Plot', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@obj.actionLoadPlotToEditor, 'Loading settings...'));
+            
+            uibutton(gm, 'Text', '🎯 Render Selected', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@obj.actionRenderSelected, 'Rendering...'));
+            uibutton(gm, 'Text', '🔗 Overlay Selected Groups', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@obj.actionOverlayGroups, 'Overlaying...'), 'BackgroundColor', [0.7 0.8 1]);
+            uibutton(gm, 'Text', '► RENDER ALL', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@()obj.renderAll([], false), 'Rendering all...'), 'BackgroundColor', [0.7 0.9 0.7]);
+            uibutton(gm, 'Text', 'Generate .m Script', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@obj.actionExportScript, 'Generating script...'), 'BackgroundColor', [1 0.9 0.6]);
+        end
+        
+        function buildEventTab(obj, tab)
+            g = uigridlayout(tab, [1 2]);
+            g.ColumnWidth = {440, '1x'};
+            
+            p = uipanel(g, 'Title', 'Advanced Event Engine & Dynamic Datatips');
+            eg = uigridlayout(p, [10 2]);
+            eg.RowHeight = {25, 25, 25, 25, 25, 25, 25, 30, 30, 30};
+            
+            uilabel(eg, 'Text', 'Saved Rules:'); obj.UI.evSaved = uidropdown(eg, 'Items', {'-- None --'}, 'ValueChangedFcn', @(~,~)obj.safeExecute(@obj.actionLoadEventLogic, ''));
+            uilabel(eg, 'Text', 'Event Name:'); obj.UI.evName = uieditfield(eg, 'Value', 'Thermal Throttle');
+            uilabel(eg, 'Text', 'Logic Expression:'); obj.UI.evLogic = uieditfield(eg, 'Value', 'R1_BatteryTemp > 80');
+            
+            uilabel(eg, 'Text', 'Target Fig #:'); obj.UI.evFig = uispinner(eg, 'Value', 1, 'LowerLimit', 1);
+            uilabel(eg, 'Text', 'Target Subplot Position:'); obj.UI.evPos = uispinner(eg, 'Value', 1, 'LowerLimit', 1);
+            
+            uilabel(eg, 'Text', 'Marker Color:'); obj.UI.evColor = uidropdown(eg, 'Items', {'r','g','b','y','m','c','k'});
+            
+            eBGrid = uigridlayout(eg, [1 2], 'Padding', [0 0 0 0]); eBGrid.Layout.Column = [1 2];
+            uibutton(eBGrid, 'Text', '💾 Save Logic Rule', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@obj.actionSaveEventLogic, 'Saving logic...'));
+            uibutton(eBGrid, 'Text', '✏️ Edit Selected Logic', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@obj.actionEditSelectedLogic, 'Modifying...'));
+            
+            uibutton(eg, 'Text', '⚙️ Process & Render Event Lines', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@obj.actionAddEvent, 'Processing...'), 'BackgroundColor', [0.8 1 0.8]);
+            obj.UI.btnDatatip = uibutton(eg, 'Text', '📍 Add Automatic Target Datatips', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@obj.actionAddCustomDatatip, 'Pinning markers...'), 'BackgroundColor', [0.7 0.9 1]);
+            
+            p2 = uipanel(g, 'Title', 'Segment Isolation Navigation');
+            sg = uigridlayout(p2, [3 2]);
+            sg.RowHeight = {'1x', 25, 30};
+            
+            obj.UI.evSegList = uilistbox(sg, 'Enable', 'off'); obj.UI.evSegList.Layout.Column = [1 2];
+            uilabel(sg, 'Text', 'Zoom Window Padding (s):'); obj.UI.evZoomPad = uispinner(sg, 'Value', 1, 'Step', 0.5);
+            
+            bGrid = uigridlayout(sg, [1 2], 'Padding', [0 0 0 0]); bGrid.Layout.Column = [1 2];
+            uibutton(bGrid, 'Text', '🔍 Zoom View Window', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@obj.actionZoomSegment, 'Zooming...'));
+            uibutton(bGrid, 'Text', '📈 Plot Isolated Segment', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@obj.actionPlotSegment, 'Extracting segment...'), 'BackgroundColor', [1 0.9 0.6]);
+        end
+        
+        function buildExtractTab(obj, tab)
+            g = uigridlayout(tab, [1 2]);
+            g.ColumnWidth = {300, '1x'};
+            
+            pl = uipanel(g, 'Title', 'Manifest Integration');
+            gl = uigridlayout(pl, [5 1]);
+            gl.RowHeight = {25, 25, 25, 25, '1x'};
+            
+            uibutton(gl, 'Text', '📍 Select Plot from Tree', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@obj.actionSelectExtractPlot, 'Binding...'));
+            obj.UI.lblExtTarget = uilabel(gl, 'Text', 'Target: None');
+            obj.UI.lblExtStart = uilabel(gl, 'Text', 'Start X: NaN');
+            obj.UI.lblExtEnd = uilabel(gl, 'Text', 'End X: NaN');
+            
+            uibutton(gl, 'Text', '🖱️ Interactive Graphical Select', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@obj.actionEnableExtCursor, 'Click on plot...'));
+            
+            pr = uipanel(g, 'Title', 'Export Dashboard');
+            gr = uigridlayout(pr, [3 1]);
+            gr.RowHeight = {25, 30, '1x'};
+            
+            obj.UI.extFile = uieditfield(gr, 'Value', 'export.csv');
+            uibutton(gr, 'Text', '🚀 Export Data Subset', 'ButtonPushedFcn', @(~,~)obj.safeExecute(@obj.actionExportData, 'Exporting...'), 'BackgroundColor', [0.7 0.9 0.7]);
+        end
+        
+        %% Core Logic & Regex Engines
+        function safeExecute(obj, functionHandle, startMsg)
+            try
+                if ~isempty(startMsg), obj.logMessage('ACTION', startMsg); end
+                functionHandle();
+            catch ME
+                errMsg = sprintf('%s (Line %d)', ME.message, ME.stack(1).line);
+                obj.logMessage('ERROR', errMsg);
+                uialert(obj.UI.Fig, errMsg, 'Runtime Error');
+            end
+        end
+        
+        function logMessage(obj, level, msg)
+            txt = sprintf('[%s] [%s] %s', datestr(now, 'HH:MM:SS'), level, msg);
+            obj.UI.Console.Value{end+1} = txt;
+            scroll(obj.UI.Console, 'bottom');
+        end
+
+        function str = fixLaTeXColors(~, str)
+            if isempty(str), return; end
+            map = {'\color{r}', '\color{red}'; '\color{g}', '\color{green}'; 
+                   '\color{b}', '\color{blue}'; '\color{c}', '\color{cyan}'; 
+                   '\color{m}', '\color{magenta}'; '\color{y}', '\color{yellow}'; 
+                   '\color{k}', '\color{black}'};
+            for i = 1:size(map, 1)
+                str = strrep(str, map{i, 1}, map{i, 2});
+            end
+        end
+        
+        function actionToggle3D(obj, ev)
+            if ev.Value, obj.UI.pltZList.Enable = 'on'; else, obj.UI.pltZList.Enable = 'off'; end
+        end
+        
+        function actionToggleC(obj, ev)
+            if ev.Value
+                obj.UI.pltCList.Enable = 'on';
+                obj.UI.pltSList.Enable = 'on';
+            else
+                obj.UI.pltCList.Enable = 'off';
+                obj.UI.pltSList.Enable = 'off';
+            end
+        end
+        
+        function actionLoadMat(obj)
+            [file,path] = uigetfile('*.mat', 'Select MAT Files', 'MultiSelect','on');
+            if isequal(file,0), return; end
+            if ischar(file), file = {file}; end
+            
+            prefixStr = inputdlg('Enter variable prefix (leave blank for none):', 'File Prefix', [1 40], {''});
+            if isempty(prefixStr), pref = ''; else, pref = prefixStr{1}; end
+            
+            for k = 1:numel(file)
+                fullFile = fullfile(path,file{k});
+                obj.LoadedFile = file{k};
+                obj.LoadedFiles{end+1} = fullFile;
+                rawStruct = load(fullFile);
+                obj.parseStructRecursive(rawStruct, '', pref);
+            end
+            obj.actionRefreshTable();
+            obj.syncUILists();
+        end
+        
+        function parseStructRecursive(obj, inStruct, prefixPath, namePrefix)
+            fn = fieldnames(inStruct);
+            for i = 1:length(fn)
+                val = inStruct.(fn{i});
+                fullPath = fn{i};
+                if ~isempty(prefixPath), fullPath = [prefixPath '.' fn{i}]; end
+                
+                if isstruct(val)
+                    obj.parseStructRecursive(val, fullPath, namePrefix);
+                elseif isnumeric(val) || islogical(val)
+                    safeName = [namePrefix matlab.lang.makeValidName(fullPath)];
+                    safeName = obj.makeUniqueName(safeName);
+                    
+                    meta = struct('data', double(val(:)), 'label', safeName, 'unit', '', ...
+                                  'offset', 0, 'transpose', false, 'isDerived', false, ...
+                                  'expr', '', 'cache', [], 'delay', 0);
+                    obj.DataVars.(safeName) = meta;
+                end
+            end
+        end
+        
+        function safeName = makeUniqueName(obj, safeName)
+            baseName = safeName; count = 1;
+            while isfield(obj.DataVars, safeName)
+                safeName = matlab.lang.makeValidName(sprintf('%s_%d', baseName, count));
+                count = count + 1;
+            end
+        end
+        
+        function sig = fetchSignal(obj, key)
+            meta = obj.DataVars.(key);
+            if meta.isDerived
+                sig = obj.evaluateMathSafely(meta.expr);
+                obj.DataVars.(key).cache = sig;
+                return;
+            end
+            if ~isempty(meta.cache), sig = meta.cache; return; end
+            sig = meta.data + meta.offset;
+            obj.DataVars.(key).cache = sig;
+        end
+        
+        function out = evaluateMathSafely(obj, expr)
+            vars = unique(regexp(expr, '[a-zA-Z]\w*', 'match'));
+            for i = 1:length(vars)
+                if isfield(obj.DataVars, vars{i})
+                    eval(sprintf('%s = obj.fetchSignal(''%s'');', vars{i}, vars{i}));
+                end
+            end
+            out = eval(expr);
+        end
+        
+        %% Logic Library (Save & Persist Logic Rules)
+        function actionSaveDerivedLogic(obj)
+            name = char(strtrim(obj.UI.derName.Value));
+            expr = char(strtrim(obj.UI.derExpr.Value));
+            if isempty(name) || isempty(expr), return; end
+            obj.SavedDerivedLogic.(matlab.lang.makeValidName(name)) = struct('name', name, 'expr', expr, 'unit', char(obj.UI.derUnit.Value));
+            obj.syncLogicLists();
+            obj.UI.derSaved.Value = name;
+        end
+        
+        function actionLoadDerivedLogic(obj)
+            key = char(obj.UI.derSaved.Value);
+            if strcmp(key, '-- None --') || ~isfield(obj.SavedDerivedLogic, matlab.lang.makeValidName(key)), return; end
+            s = obj.SavedDerivedLogic.(matlab.lang.makeValidName(key));
+            obj.UI.derName.Value = s.name;
+            obj.UI.derExpr.Value = s.expr;
+            obj.UI.derUnit.Value = s.unit;
+        end
+        
+        function actionSaveEventLogic(obj)
+            name = char(strtrim(obj.UI.evName.Value));
+            expr = char(strtrim(obj.UI.evLogic.Value));
+            if isempty(name) || isempty(expr), return; end
+            obj.SavedEventLogic.(matlab.lang.makeValidName(name)) = struct('name', name, 'expr', expr, 'c', char(obj.UI.evColor.Value));
+            obj.syncLogicLists();
+            obj.UI.evSaved.Value = name;
+        end
+        
+        function actionLoadEventLogic(obj)
+            key = char(obj.UI.evSaved.Value);
+            if strcmp(key, '-- None --') || ~isfield(obj.SavedEventLogic, matlab.lang.makeValidName(key)), return; end
+            s = obj.SavedEventLogic.(matlab.lang.makeValidName(key));
+            obj.UI.evName.Value = s.name;
+            obj.UI.evLogic.Value = s.expr;
+            obj.UI.evColor.Value = s.c;
+        end
+        
+        function actionEditSelectedLogic(obj)
+            key = char(obj.UI.evSaved.Value);
+            if strcmp(key, '-- None --'), return; end
+            obj.UI.evLogic.Value = obj.SavedEventLogic.(matlab.lang.makeValidName(key)).expr;
+            obj.logMessage('SYSTEM', 'Logic loaded into Expression box for editing.');
+        end
+        
+        function syncLogicLists(obj)
+            dKeys = fieldnames(obj.SavedDerivedLogic);
+            if isempty(dKeys), obj.UI.derSaved.Items = {'-- None --'};
+            else, obj.UI.derSaved.Items = cellfun(@(k) obj.SavedDerivedLogic.(k).name, dKeys, 'UniformOutput', false); end
+            
+            eKeys = fieldnames(obj.SavedEventLogic);
+            if isempty(eKeys), obj.UI.evSaved.Items = {'-- None --'};
+            else, obj.UI.evSaved.Items = cellfun(@(k) obj.SavedEventLogic.(k).name, eKeys, 'UniformOutput', false); end
+        end
+        
+        function actionCreateDerived(obj)
+            name = char(strtrim(obj.UI.derName.Value));
+            expr = char(strtrim(obj.UI.derExpr.Value));
+            safeName = matlab.lang.makeValidName(name);
+            out = obj.evaluateMathSafely(expr);
+            
+            obj.DataVars.(safeName) = struct('data', out(:), 'label', name, 'unit', char(obj.UI.derUnit.Value), ...
+                'offset', 0, 'transpose', false, 'isDerived', true, 'expr', expr, 'cache', out(:), 'delay', 0);
+            
+            obj.actionRefreshTable();
+            obj.syncUILists();
+        end
+        
+        %% Metadata Tab Callbacks
+        function keys = getSelectedKeys(obj)
+            keys = {};
+            for i = 1:length(obj.SelectedRows), keys{end+1} = obj.UI.dataTable.Data{obj.SelectedRows(i), 1}; end
+        end
+        
+        function actionTableSelect(obj, ev)
+            if isempty(ev.Indices), obj.SelectedRows = []; return; end
+            obj.SelectedRows = unique(ev.Indices(:,1))';
+        end
+        
+        function actionTableEdit(obj, ev)
+            k = obj.UI.dataTable.Data{ev.Indices(1), 1};
+            val = ev.NewData;
+            switch ev.Indices(2)
+                case 2, obj.DataVars.(k).label = char(val); obj.syncUILists();
+                case 3, obj.DataVars.(k).unit = char(val);
+                case 5, obj.DataVars.(k).offset = val; obj.DataVars.(k).cache = [];
+                case 6, obj.DataVars.(k).transpose = val; obj.DataVars.(k).cache = [];
+            end
+        end
+        
+        function actionApplyModifier(obj, mode)
+            k = obj.getSelectedKeys(); if isempty(k), return; end
+            val = str2double(cell2mat(inputdlg(['Enter ' mode ':'])));
+            for i=1:length(k), obj.DataVars.(k{i}).(mode) = val; obj.DataVars.(k{i}).cache = []; end
+            obj.actionRefreshTable();
+        end
+        
+        function actionApplyPrefix(obj)
+            k = obj.getSelectedKeys(); if isempty(k), return; end
+            val = inputdlg('Enter Prefix:');
+            for i=1:length(k), obj.DataVars.(k{i}).label = [char(val{1}) char(obj.DataVars.(k{i}).label)]; end
+            obj.actionRefreshTable(); obj.syncUILists();
+        end
+        
+        function clear_DataVars(obj)
+            k = obj.getSelectedKeys();
+            for i=1:length(k)
+                obj.DataVars = rmfield(obj.DataVars, k{i});
+            end
+            obj.actionRefreshTable(); obj.syncUILists();
+        end
+        
+        function actionResetModifiers(obj)
+            k = fieldnames(obj.DataVars);
+            for i=1:length(k), obj.DataVars.(k{i}).offset = 0; obj.DataVars.(k{i}).cache = []; end
+            obj.actionRefreshTable();
+        end
+        
+        function clear_loadfile(obj)
+            obj.DataVars = struct(); obj.Plots = {}; obj.Events = {};
+            obj.SelectedXSignals = {}; obj.SelectedYSignals = {}; obj.SelectedYScales = []; obj.SelectedYStyles = {}; obj.SelectedYLeg = [];
+            obj.ExtState = struct('targetPlotId', '', 'startX', NaN, 'endX', NaN, 'hStart', [], 'hEnd', []);
+            obj.UI.activeEditId = '';
+            obj.actionRefreshTable(); obj.syncUILists(); obj.syncManifest(); obj.syncEventList();
+        end
+        
+        function actionCalculateStats(obj)
+            keys = obj.getSelectedKeys(); if isempty(keys), return; end
+            for i = 1:length(keys)
+                k = keys{i};
+                validData = obj.fetchSignal(k); validData = validData(isfinite(validData));
+                obj.logMessage('STATS', sprintf('%s | Max: %.2f | Min: %.2f | Mean: %.2f', k, max(validData), min(validData), mean(validData)));
+            end
+        end
+        
+        function actionValidateState(obj)
+            reqVars = {};
+            % Collect from Plots
+            for i = 1:length(obj.Plots)
+                p = obj.Plots{i};
+                if ischar(p.x), reqVars{end+1} = p.x; else, reqVars = [reqVars, p.x]; end
+                reqVars = [reqVars, p.y];
+                if p.is3D, reqVars{end+1} = p.z; end
+                if p.is4D && ~isempty(p.sVar), reqVars{end+1} = p.sVar; end
+            end
+            
+            % Collect from Derived signals
+            fn = fieldnames(obj.DataVars);
+            for i = 1:length(fn)
+                if obj.DataVars.(fn{i}).isDerived
+                    vars = unique(regexp(obj.DataVars.(fn{i}).expr, '[a-zA-Z]\w*', 'match'));
+                    reqVars = [reqVars, vars];
+                end
+            end
+            
+            % Collect from Events
+            for i = 1:length(obj.Events)
+                vars = unique(regexp(obj.Events{i}.expr, '[a-zA-Z]\w*', 'match'));
+                reqVars = [reqVars, vars];
+            end
+            
+            reqVars = unique(reqVars);
+            missingVars = {};
+            for i = 1:length(reqVars)
+                if ~isempty(reqVars{i}) && ~isfield(obj.DataVars, reqVars{i})
+                    missingVars{end+1} = reqVars{i};
+                end
+            end
+            
+            if isempty(missingVars)
+                uialert(obj.UI.Fig, 'All required variables for plots and events are present!', 'Validation Passed', 'Icon', 'success');
+            else
+                uialert(obj.UI.Fig, sprintf('Missing required variables:\n%s', strjoin(missingVars, '\n')), 'Validation Failed', 'Icon', 'error');
+            end
+        end
+
+        function actionSaveState(obj)
+            [file, path] = uiputfile('*.mat', 'Save State'); if file == 0, return; end
+            
+            % Only save logic metadata, strip out large numeric arrays
+            lightDataVars = struct();
+            fn = fieldnames(obj.DataVars);
+            for i = 1:length(fn)
+                if obj.DataVars.(fn{i}).isDerived
+                    lightDataVars.(fn{i}) = obj.DataVars.(fn{i});
+                    lightDataVars.(fn{i}).data = [];
+                    lightDataVars.(fn{i}).cache = [];
+                end
+            end
+            
+            % Strip heavy index tracking from events to allow mapping to new data
+            lightEvents = obj.Events;
+            for i=1:length(lightEvents)
+                lightEvents{i}.onT = []; lightEvents{i}.offT = []; 
+                lightEvents{i}.onIdx = []; lightEvents{i}.offIdx = [];
+            end
+            
+            appState = struct('DerivedVars', lightDataVars, 'Plots', {obj.Plots}, 'Events', {lightEvents}, ...
+                'SavedDerivedLogic', obj.SavedDerivedLogic, 'SavedEventLogic', obj.SavedEventLogic);
+            save(fullfile(path, file), 'appState');
+        end
+        
+        function actionLoadState(obj)
+            [file,path] = uigetfile('*.mat','Load State'); if isequal(file,0), return; end
+            S = load(fullfile(path,file));
+            obj.Plots = S.appState.Plots; 
+            obj.Events = S.appState.Events;
+            if isfield(S.appState, 'SavedDerivedLogic'), obj.SavedDerivedLogic = S.appState.SavedDerivedLogic; end
+            if isfield(S.appState, 'SavedEventLogic'), obj.SavedEventLogic = S.appState.SavedEventLogic; end
+            
+            % Restore derived logic blueprints
+            if isfield(S.appState, 'DerivedVars')
+                dfn = fieldnames(S.appState.DerivedVars);
+                for i = 1:length(dfn)
+                    if ~isfield(obj.DataVars, dfn{i})
+                        obj.DataVars.(dfn{i}) = S.appState.DerivedVars.(dfn{i});
+                    end
+                end
+            end
+            obj.actionRefreshTable(); obj.syncUILists(); obj.syncManifest(); obj.syncEventList(); obj.syncLogicLists();
+        end
+
+        function actionRefreshTable(obj)
+            k = lower(char(obj.UI.txtSearch.Value)); fn = fieldnames(obj.DataVars);
+            d = cell(0, 7); rowIdx = 1;
+            for i = 1:length(fn)
+                v = obj.DataVars.(fn{i});
+                if isempty(k) || contains(lower(v.label), k) || contains(lower(fn{i}), k)
+                    d(rowIdx, :) = {fn{i}, v.label, v.unit, num2str(length(v.data)), v.offset, v.transpose, v.isDerived};
+                    rowIdx = rowIdx + 1;
+                end
+            end
+            obj.UI.dataTable.Data = d;
+        end
+        
+        %% Plot Builder Architecture
+        function [lS, marker] = parseLineStyle(~, rawStyle)
+            lS = rawStyle; marker = 'none';
+            if contains(lS, 'o'), marker = 'o'; lS = strrep(lS, 'o', ''); end
+            if contains(lS, '.'), marker = '.'; lS = strrep(lS, '.', ''); end
+            if contains(lS, 'x'), marker = 'x'; lS = strrep(lS, 'x', ''); end
+            if isempty(lS), lS = 'none'; end
+        end
+
+        function actionAddPlot(obj)
+            if isfield(obj.UI, 'activeEditId') && ~isempty(obj.UI.activeEditId)
+                id = obj.UI.activeEditId;
+                obj.UI.activeEditId = ''; % Reset
+            else
+                id = char(javaMethod('randomUUID','java.util.UUID'));
+            end
+            
+            p = struct('id', id, 'group', obj.UI.pltGroup.Value, 'f', obj.UI.pltFig.Value, ...
+                'r', obj.UI.pltRow.Value, 'c', obj.UI.pltCol.Value, 'p', obj.UI.pltPos.Value, ...
+                'color', char(obj.UI.pltColor.Value), 'lW', obj.UI.pltWidth.Value, 'lS', char(obj.UI.pltLStyle.Value), ...
+                'grid', obj.UI.pltGrid.Value, 'leg', obj.UI.pltLeg.Value, 'evt', obj.UI.pltEvt.Value, ...
+                'title', char(obj.UI.pltTitle.Value), 'xLabel', char(obj.UI.pltXLabel.Value), 'yLabel', char(obj.UI.pltYLabel.Value), ...
+                'zLabel', '', 'link', obj.UI.pltLink.Value, ...
+                'x', {obj.SelectedXSignals}, 'y', {obj.SelectedYSignals}, ...
+                'yScales', obj.SelectedYScales, 'yStyles', {obj.SelectedYStyles}, 'yLeg', obj.SelectedYLeg, ...
+                'is3D', obj.UI.pltEn3D.Value, 'z', '', 'is4D', obj.UI.pltEn4D.Value, 'cVar', '', 'sVar', '', 'tickLabels', {{}}, 'tickVals', []);
+            
+            if p.is3D
+                p.z = char(obj.UI.pltZList.Value);
+                p.zLabel = strrep(obj.DataVars.(p.z).label, '_', '\_');
+            end
+            
+            if p.is4D
+                p.cVar = char(obj.UI.pltCList.Value);
+                sVStr = char(obj.UI.pltSList.Value);
+                
+                if ~isempty(sVStr)
+                    p.sVar = sVStr;
+                    sV = obj.fetchSignal(p.sVar);
+                    uVals = unique(sV(~isnan(sV)));
+                    
+                    ansLabels = inputdlg(sprintf('Found %d unique states in %s. Enter comma-separated names (or leave blank to use raw values):', length(uVals), p.sVar), ...
+                        'State Category Labels', [1 50], {''});
+                    
+                    if ~isempty(ansLabels) && ~isempty(ansLabels{1})
+                        tokens = split(ansLabels{1}, ',');
+                        p.tickLabels = cellfun(@strtrim, tokens, 'UniformOutput', false);
+                    else
+                        p.tickLabels = cellfun(@num2str, num2cell(uVals), 'UniformOutput', false);
+                    end
+                    p.tickVals = uVals;
+                end
+            end
+            
+            idx = find(cellfun(@(x) strcmp(x.id, id), obj.Plots));
+            if ~isempty(idx)
+                obj.Plots{idx} = p;
+                obj.logMessage('SYSTEM', sprintf('Plot %s updated in place.', id));
+            else
+                obj.Plots{end+1} = p;
+            end
+            
+            obj.SelectedXSignals = {};
+            obj.SelectedYSignals = {};
+            obj.SelectedYScales = [];
+            obj.SelectedYStyles = {};
+            obj.SelectedYLeg = [];
+            
+            obj.syncManifest(); 
+            obj.syncUILists();
+        end
+        
+        function actionLoadPlotToEditor(obj)
+            nodes = obj.UI.plotTree.SelectedNodes; if isempty(nodes), return; end
+            nd = nodes(1).NodeData;
+            if strcmp(nd.type, 'plot')
+                for p = 1:length(obj.Plots)
+                    if strcmp(obj.Plots{p}.id, nd.id)
+                        pt = obj.Plots{p};
+                        obj.UI.activeEditId = pt.id;
+                        
+                        obj.UI.pltGroup.Value = pt.group;
+                        obj.UI.pltFig.Value = pt.f; obj.UI.pltRow.Value = pt.r; obj.UI.pltCol.Value = pt.c; obj.UI.pltPos.Value = pt.p;
+                        obj.UI.pltTitle.Value = pt.title; obj.UI.pltXLabel.Value = pt.xLabel; obj.UI.pltYLabel.Value = pt.yLabel;
+                        obj.UI.pltColor.Value = pt.color; obj.UI.pltWidth.Value = pt.lW; obj.UI.pltLStyle.Value = pt.lS;
+                        obj.UI.pltLink.Value = pt.link; obj.UI.pltGrid.Value = pt.grid; obj.UI.pltLeg.Value = pt.leg; obj.UI.pltEvt.Value = pt.evt;
+                        
+                        obj.SelectedYSignals = pt.y; 
+                        
+                        if ischar(pt.x)
+                            obj.SelectedXSignals = repmat({pt.x}, 1, length(pt.y));
+                        else
+                            obj.SelectedXSignals = pt.x;
+                        end
+                        
+                        if isfield(pt, 'yScales'), obj.SelectedYScales = pt.yScales; else, obj.SelectedYScales = ones(1, length(pt.y)); end
+                        if isfield(pt, 'yStyles'), obj.SelectedYStyles = pt.yStyles; else, obj.SelectedYStyles = repmat({pt.lS}, 1, length(pt.y)); end
+                        if isfield(pt, 'yLeg'), obj.SelectedYLeg = pt.yLeg; else, obj.SelectedYLeg = true(1, length(pt.y)); end
+                        
+                        if pt.is3D, obj.UI.pltEn3D.Value = true; obj.UI.pltZList.Enable = 'on'; obj.UI.pltZList.Value = pt.z;
+                        else, obj.UI.pltEn3D.Value = false; obj.UI.pltZList.Enable = 'off'; end
+                        
+                        if pt.is4D
+                            obj.UI.pltEn4D.Value = true; obj.UI.pltCList.Enable = 'on'; obj.UI.pltSList.Enable = 'on';
+                            obj.UI.pltCList.Value = pt.cVar; 
+                            if isfield(pt, 'sVar') && ~isempty(pt.sVar), obj.UI.pltSList.Value = pt.sVar; end
+                        else
+                            obj.UI.pltEn4D.Value = false; obj.UI.pltCList.Enable = 'off'; obj.UI.pltSList.Enable = 'off'; 
+                        end
+                        
+                        obj.syncUILists(); return;
+                    end
+                end
+            end
+        end
+        
+        function actionDeleteManifestItem(obj)
+            nodes = obj.UI.plotTree.SelectedNodes; if isempty(nodes), return; end
+            for i = 1:length(nodes)
+                nd = nodes(i).NodeData;
+                if strcmp(nd.type, 'plot')
+                    obj.Plots = obj.Plots(~cellfun(@(x) strcmp(x.id, nd.id), obj.Plots));
+                elseif strcmp(nd.type, 'fig')
+                    obj.Plots = obj.Plots(~cellfun(@(x) x.f == nd.id, obj.Plots));
+                end
+            end
+            obj.syncManifest();
+        end
+
+        function syncManifest(obj)
+            delete(obj.UI.plotTree.Children);
+            
+            if ~isempty(obj.Plots)
+                T = struct2table([obj.Plots{:}], 'AsArray', true);
+                [~, sortIdx] = sortrows(T, {'f', 'p'});
+                obj.Plots = obj.Plots(sortIdx);
+            end
+            
+            figMap = containers.Map('KeyType', 'double', 'ValueType', 'any');
+            for p = 1:length(obj.Plots)
+                f = obj.Plots{p}.f;
+                if isKey(figMap, f), figMap(f) = [figMap(f) {obj.Plots{p}}]; else, figMap(f) = {obj.Plots{p}}; end
+            end
+            
+            fKeys = sort(cell2mat(figMap.keys()));
+            for i = 1:length(fKeys)
+                fNode = uitreenode(obj.UI.plotTree, 'Text', sprintf('Figure %d', fKeys(i)), 'NodeData', struct('type', 'fig', 'id', fKeys(i)));
+                pList = figMap(fKeys(i));
+                for j = 1:length(pList)
+                    pName = sprintf('Subplot %d: %s', pList{j}.p, strjoin(pList{j}.y, ','));
+                    uitreenode(fNode, 'Text', pName, 'NodeData', struct('type', 'plot', 'id', pList{j}.id));
+                end
+                expand(fNode);
+            end
+        end
+        
+        function actionRenderSelected(obj)
+            nodes = obj.UI.plotTree.SelectedNodes; if isempty(nodes), return; end
+            targetFigs = []; targetGroups = []; targetPlots = {};
+            
+            for i = 1:length(nodes)
+                nd = nodes(i).NodeData;
+                if strcmp(nd.type, 'fig')
+                    targetFigs(end+1) = nd.id;
+                elseif strcmp(nd.type, 'plot')
+                    targetPlots{end+1} = nd.id;
+                    for p=1:length(obj.Plots)
+                        if strcmp(obj.Plots{p}.id, nd.id), targetFigs(end+1) = obj.Plots{p}.f; break; end
+                    end
+                end
+            end
+            
+            if ~isempty(targetFigs)
+                obj.renderAll(unique(targetFigs), false, targetGroups, targetPlots);
+            end
+        end
+
+        function actionOverlayGroups(obj)
+            obj.renderAll([], true, [], {});
+        end
+        
+        %% Render Engine Execution
+        function renderAll(obj, targetFig, isOverlay, targetGroups, targetPlots)
+            if nargin < 3, isOverlay = false; end
+            if nargin < 4, targetGroups = []; end
+            if nargin < 5, targetPlots = {}; end
+            
+            allFigs = unique(cellfun(@(x)x.f, obj.Plots));
+            if ~isempty(targetFig), allFigs = intersect(allFigs, targetFig); end
+            
+            if ~isOverlay
+                for i = 1:length(allFigs), figure(allFigs(i)); clf(figure(allFigs(i))); end
+            end
+            
+            axMap = containers.Map('KeyType', 'double', 'ValueType', 'any');
+            distinctColors = lines(15);
+            
+            nodes = obj.UI.plotTree.SelectedNodes; activeGroups = [];
+            if isOverlay && ~isempty(nodes)
+                for i=1:length(nodes), if strcmp(nodes(i).NodeData.type, 'grp'), activeGroups(end+1) = nodes(i).NodeData.id; end; end
+            end
+            
+            for i = 1:length(obj.Plots)
+                p = obj.Plots{i};
+                
+                if ~isempty(targetFig) && ~ismember(p.f, targetFig), continue; end
+                if isOverlay && ~isempty(activeGroups) && ~ismember(p.group, activeGroups), continue; end
+                if ~isOverlay && (~isempty(targetGroups) || ~isempty(targetPlots))
+                    if ~ismember(p.group, targetGroups) && ~any(strcmp(p.id, targetPlots))
+                        continue;
+                    end
+                end
+                
+                ax = subplot(p.r, p.c, p.p, 'Parent', figure(p.f)); hold(ax, 'on');
+                if p.link > 0
+                    if isKey(axMap, p.link), axMap(p.link) = [axMap(p.link), ax]; else, axMap(p.link) = ax; end
+                end
+                
+                if ischar(p.x), p.x = repmat({p.x}, 1, length(p.y)); end
+                if ~isfield(p, 'yLeg'), p.yLeg = true(1, length(p.y)); end
+                
+                existingTitle = ''; if isOverlay && ~isempty(ax.Title.String), existingTitle = ax.Title.String; end
+                autoTitleChunks = {};
+                firstValidX = '';
+                
+                if p.is4D
+                    xSignal = p.x{1}; firstValidX = xSignal;
+                    xV = obj.fetchSignal(xSignal);
+                    yScale = 1; if isfield(p, 'yScales') && ~isempty(p.yScales), yScale = p.yScales(1); end
+                    yV = obj.fetchSignal(p.y{1}) * yScale;
+                    
+                    cV = obj.fetchSignal(p.sVar);
+                    len = min([length(xV), length(yV), length(cV)]);
+                    [cleanLS, cleanMarker] = obj.parseLineStyle(p.lS);
+                    
+                    validC = cV(1:len);
+                    
+                    % Determine unique states for a discrete colormap
+                    uStates = unique(validC(~isnan(validC)));
+                    numStates = length(uStates);
+                    if numStates == 0, numStates = 1; end
+                    
+                    cmap = lines(numStates);
+                    colormap(ax, cmap);
+                    
+                    cMapped = zeros(size(validC));
+                    for k = 1:numStates
+                        cMapped(validC == uStates(k)) = k;
+                    end
+                    
+                    caxis(ax, [1, numStates]);
+                    cb = colorbar(ax);
+                    cb.Ticks = 1:numStates;
+                    
+                    if isfield(p, 'tickLabels') && length(p.tickLabels) == numStates
+                        cb.TickLabels = p.tickLabels;
+                    else
+                        cb.TickLabels = cellfun(@num2str, num2cell(uStates), 'UniformOutput', false);
+                    end
+                    
+                    dispName = strrep(obj.DataVars.(p.y{1}).label, '_', '\_');
+                    
+                    if p.is3D
+                        zV = obj.fetchSignal(p.z);
+                        surface(ax, [xV(1:len) xV(1:len)], [yV(1:len) yV(1:len)], [zV(1:len) zV(1:len)], [cMapped(1:len)' cMapped(1:len)'], ...
+                            'FaceColor', 'none', 'EdgeColor', 'flat', 'LineWidth', p.lW, 'LineStyle', cleanLS, 'Marker', cleanMarker, 'DisplayName', dispName);
+                    else
+                        surface(ax, [xV(1:len) xV(1:len)], [yV(1:len) yV(1:len)], zeros(len, 2), [cMapped(1:len) cMapped(1:len)], ...
+                            'FaceColor', 'none', 'EdgeColor', 'flat', 'LineWidth', p.lW, 'LineStyle', cleanLS, 'Marker', cleanMarker, 'DisplayName', dispName);
+                    end
+                else
+                    for j = 1:length(p.y)
+                        xSignal = p.x{j}; 
+                        xV = obj.fetchSignal(xSignal);
+                        
+                        yScale = 1; if isfield(p, 'yScales') && length(p.yScales) >= j, yScale = p.yScales(j); end
+                        yStyle = p.lS; if isfield(p, 'yStyles') && length(p.yStyles) >= j, yStyle = p.yStyles{j}; end
+                        
+                        yV = obj.fetchSignal(p.y{j}) * yScale; len = min(length(xV), length(yV));
+                        c = p.color;
+                        
+                        [cleanLS, cleanMarker] = obj.parseLineStyle(yStyle);
+                        rawLabel = obj.DataVars.(p.y{j}).label;
+                        
+                        if p.yLeg(j)
+                            if isempty(firstValidX), firstValidX = xSignal; end
+                            dispName = strrep(rawLabel, '_', '\_');
+                            visMode = 'on';
+                        else
+                            dispName = '';
+                            visMode = 'off';
+                        end
+                        
+                        args = {'LineWidth', p.lW, 'LineStyle', cleanLS, 'Marker', cleanMarker, 'DisplayName', dispName, 'HandleVisibility', visMode};
+                        
+                        if strcmp(c, 'auto')
+                            cRGB = distinctColors(mod(length(findall(ax, 'Type', 'line')) + j - 1, 15) + 1, :);
+                            args = [args, 'Color', cRGB];
+                            if ~strcmp(cleanMarker, 'none'), args = [args, 'MarkerFaceColor', cRGB]; end
+                            if p.yLeg(j)
+                                autoTitleChunks{end+1} = sprintf('\\color[rgb]{%.3f,%.3f,%.3f}%s', cRGB(1), cRGB(2), cRGB(3), strrep(rawLabel, '_', '\_'));
+                            end
+                        else
+                            args = [args, 'Color', c]; 
+                            if ~strcmp(cleanMarker, 'none'), args = [args, 'MarkerFaceColor', c]; end
+                            if p.yLeg(j)
+                                mappedColor = obj.fixLaTeXColors(['\color{' c '}']);
+                                autoTitleChunks{end+1} = sprintf('%s%s', mappedColor, strrep(rawLabel, '_', '\_'));
+                            end
+                        end
+                        
+                        if p.is3D
+                            zV = obj.fetchSignal(p.z); plot3(ax, xV(1:len), yV(1:len), zV(1:len), args{:});
+                        else
+                            plot(ax, xV(1:len), yV(1:len), args{:});
+                        end
+                    end
+                end
+                
+                if isempty(p.title) && ~isempty(autoTitleChunks)
+                    plotTitleStr = strjoin(autoTitleChunks, ' \color{black}/ ');
+                else
+                    plotTitleStr = obj.fixLaTeXColors(p.title);
+                end
+                
+                if ~isempty(existingTitle)
+                    title(ax, [existingTitle ' \color{black}/ ' plotTitleStr], 'Interpreter', 'tex'); 
+                else
+                    if ~isempty(plotTitleStr), title(ax, plotTitleStr, 'Interpreter', 'tex'); end 
+                end
+                
+                if ~isempty(p.xLabel)
+                    xlabel(ax, p.xLabel, 'Interpreter', 'none'); 
+                elseif ~isempty(firstValidX)
+                    xlabel(ax, strrep(obj.DataVars.(firstValidX).label, '_', '\_'), 'Interpreter', 'none'); 
+                end
+                
+                if ~isempty(p.yLabel), ylabel(ax, p.yLabel, 'Interpreter', 'none'); end
+                if p.is3D && ~isempty(p.zLabel), zlabel(ax, p.zLabel, 'Interpreter', 'none'); end
+                if p.grid, grid(ax, 'on'); end; if p.leg, legend(ax, 'Location', 'best'); end; if p.is3D, view(ax, 3); end
+            end
+            linkIds = axMap.keys(); for i = 1:length(linkIds), if length(axMap(linkIds{i})) > 1, linkaxes(axMap(linkIds{i}), 'x'); end; end
+        end
+        
+        %% Advanced Event Engine & Interactive Data Tips
+        function actionAddEvent(obj)
+            expr = char(strtrim(obj.UI.evLogic.Value));
+            mask = obj.evaluateMathSafely(expr);
+            mask = double(mask(:)); mask(~isfinite(mask)) = 0; mask(mask ~= 0) = 1;
+            
+            d = diff([0; mask; 0]); startIdx = find(d == 1); stopIdx = find(d == -1) - 1;
+            if isempty(startIdx), uialert(obj.UI.Fig, 'No logic transitions found.', 'Notice'); return; end
+            
+            fn = fieldnames(obj.DataVars);
+            [indx, tf] = listdlg('PromptString', 'Select Time/X Reference Channel for logic evaluation:', 'SelectionMode', 'single', 'ListString', fn);
+            if ~tf, return; end
+            
+            t = obj.fetchSignal(fn{indx}); t = t(:);
+            e = struct('id', char(javaMethod('randomUUID','java.util.UUID')), 'name', char(obj.UI.evName.Value), ...
+                'expr', expr, 'refX', fn{indx}, ...
+                'onT', t(startIdx), 'offT', t(stopIdx), 'onIdx', startIdx, 'offIdx', stopIdx, ...
+                'fig', obj.UI.evFig.Value, 'pos', obj.UI.evPos.Value, 'c', char(obj.UI.evColor.Value));
+            
+            obj.Events{end+1} = e; obj.syncEventList();
+            obj.renderEventsDirectly(e);
+        end
+        
+        function renderEventsDirectly(obj, e)
+            fNum = e.fig; if ~ishandle(fNum), return; end
+            axList = findall(figure(fNum), 'Type', 'axes', '-not', 'Tag', 'legend');
+            if e.pos > length(axList), return; end
+            ax = axList(end - e.pos + 1); hold(ax, 'on');
+            
+            for t = 1:length(e.onT)
+                xline(ax, e.onT(t), '-', 'Color', e.c, 'LineWidth', 1.5, 'HandleVisibility', 'off');
+                xline(ax, e.offT(t), '--', 'Color', e.c, 'LineWidth', 1.5, 'HandleVisibility', 'off');
+            end
+        end
+        
+        function actionAddCustomDatatip(obj)
+            figNum = obj.UI.evFig.Value; posNum = obj.UI.evPos.Value;
+            if ~ishandle(figNum), uialert(obj.UI.Fig, 'Target Figure is not open.', 'Error'); return; end
+            
+            axList = findall(figure(figNum), 'Type', 'axes', '-not', 'Tag', 'legend');
+            if isempty(axList) || posNum > length(axList)
+                uialert(obj.UI.Fig, 'Target subplots position not found.', 'Error'); return;
+            end
+            ax = axList(end - posNum + 1);
+            
+            curves = findobj(ax, 'Type', 'line', '-or', 'Type', 'surface');
+            if isempty(curves)
+                uialert(obj.UI.Fig, 'No plotted line curves found on target subplot.', 'Error'); return;
+            end
+            
+            names = cell(length(curves), 1);
+            for i=1:length(curves)
+                if ~isempty(curves(i).DisplayName), names{i} = curves(i).DisplayName;
+                else, names{i} = sprintf('Curve Object (%d)', i); end
+            end
+            [cIdx, tf] = listdlg('PromptString', 'Select target line object to attach tip:', 'SelectionMode', 'single', 'ListString', names);
+            if ~tf, return; end
+            targetCurve = curves(cIdx);
+            
+            if isempty(obj.Events), uialert(obj.UI.Fig, 'No events available. Process an event first.', 'Error'); return; end
+            evNames = cellfun(@(x) x.name, obj.Events, 'UniformOutput', false);
+            [eIdx, tf2] = listdlg('PromptString', 'Select Event to mark:', 'SelectionMode', 'single', 'ListString', evNames);
+            if ~tf2, return; end
+            e = obj.Events{eIdx};
+            
+            xl = ax.XLabel.String; yl = targetCurve.DisplayName;
+            if isempty(xl), xl = 'XData'; end; if isempty(yl), yl = 'YData'; end
+            
+            xData = targetCurve.XData; yData = targetCurve.YData; zData = [];
+            if isprop(targetCurve, 'ZData') && ~isempty(targetCurve.ZData) && any(targetCurve.ZData(:) ~= 0)
+                zData = targetCurve.ZData;
+            end
+            
+            N = numel(xData);
+            evtText = repmat({''}, N, 1);
+            tipIndices = [];
+            
+            for t = 1:length(e.onIdx)
+                idxOn = e.onIdx(t);
+                if idxOn <= N
+                    evtText{idxOn} = sprintf('%s [ON]', e.name);
+                    tipIndices(end+1) = idxOn;
+                end
+                
+                idxOff = e.offIdx(t);
+                if idxOff <= N
+                    evtText{idxOff} = sprintf('%s [OFF]', e.name);
+                    tipIndices(end+1) = idxOff;
+                end
+            end
+            
+            dtt = targetCurve.DataTipTemplate;
+            dtt.DataTipRows(1).Label = xl;
+            dtt.DataTipRows(2).Label = yl;
+            if ~isempty(zData) && numel(dtt.DataTipRows) >= 3
+                zl = ax.ZLabel.String; if isempty(zl), zl = 'ZData'; end
+                dtt.DataTipRows(3).Label = zl;
+                while numel(dtt.DataTipRows) > 3, dtt.DataTipRows(end) = []; end
+            else
+                while numel(dtt.DataTipRows) > 2, dtt.DataTipRows(end) = []; end
+            end
+            
+            dtt.DataTipRows(end+1) = dataTipTextRow('Event:', evtText);
+            
+            for i = 1:length(tipIndices)
+                idx = tipIndices(i);
+                if ~isempty(zData)
+                    datatip(targetCurve, xData(idx), yData(idx), zData(idx));
+                else
+                    datatip(targetCurve, xData(idx), yData(idx));
+                end
+            end
+            
+            obj.logMessage('SYSTEM', sprintf('Automated datatips for %s attached successfully strictly by index.', e.name));
+        end
+        
+        %% Segments & Isolation Infrastructure
+        function syncEventList(obj)
+            items = {}; ids = {};
+            for i = 1:length(obj.Events)
+                e = obj.Events{i};
+                for j = 1:length(e.onT)
+                    items{end+1} = sprintf('[F%d:P%d] %s: Seg %d (%.1fs - %.1fs)', e.fig, e.pos, e.name, j, e.onT(j), e.offT(j));
+                    ids{end+1} = struct('fig', e.fig, 't1', e.onT(j), 't2', e.offT(j));
+                end
+            end
+            if isempty(items)
+                obj.UI.evSegList.Enable = 'off'; obj.UI.evSegList.Items = {'No Segments'}; obj.UI.evSegList.ItemsData = {};
+            else
+                obj.UI.evSegList.Enable = 'on'; obj.UI.evSegList.Items = items; obj.UI.evSegList.ItemsData = ids;
+            end
+        end
+
+        function actionZoomSegment(obj)
+            seg = obj.UI.evSegList.Value; if isempty(seg) || ~isstruct(seg), return; end
+            pad = obj.UI.evZoomPad.Value;
+            if ishandle(seg.fig)
+                axList = findall(figure(seg.fig), 'Type', 'axes', '-not', 'Tag', 'legend');
+                for a = 1:length(axList), xlim(axList(a), [seg.t1 - pad, seg.t2 + pad]); end
+            end
+        end
+        
+        function actionPlotSegment(obj)
+            seg = obj.UI.evSegList.Value; if isempty(seg) || ~isstruct(seg), return; end
+            activePlots = {};
+            for p=1:length(obj.Plots), if obj.Plots{p}.f == seg.fig, activePlots{end+1} = obj.Plots{p}; end; end
+            if isempty(activePlots), return; end
+            
+            f = figure('Name', 'Segment Extracted Plot'); ax = axes(f); hold(ax, 'on');
+            for p=1:length(activePlots)
+                
+                if ischar(activePlots{p}.x), activePlots{p}.x = repmat({activePlots{p}.x}, 1, length(activePlots{p}.y)); end
+                
+                for y=1:length(activePlots{p}.y)
+                    xV = obj.fetchSignal(activePlots{p}.x{y});
+                    yScale = 1; if isfield(activePlots{p}, 'yScales') && length(activePlots{p}.yScales) >= y, yScale = activePlots{p}.yScales(y); end
+                    yV = obj.fetchSignal(activePlots{p}.y{y}) * yScale;
+                    idx = (xV >= seg.t1) & (xV <= seg.t2);
+                    plot(ax, xV(idx), yV(idx), 'LineWidth', 1.5, 'DisplayName', activePlots{p}.y{y});
+                end
+            end
+            legend(ax, 'show', 'Interpreter', 'none'); title(ax, 'Isolated Event Segment Duration'); grid(ax, 'on');
+        end
+        
+        %% Extraction Tab Actions
+        function actionEnableExtCursor(obj)
+            if isempty(obj.ExtState.targetPlotId), return; end
+            targetFig = -1;
+            for p=1:length(obj.Plots), if strcmp(obj.Plots{p}.id, obj.ExtState.targetPlotId), targetFig = obj.Plots{p}.f; break; end; end
+            if targetFig == -1 || ~ishandle(targetFig), return; end
+            
+            figure(targetFig); [x, ~] = ginput(2);
+            obj.ExtState.startX = min(x); obj.ExtState.endX = max(x);
+            obj.UI.lblExtStart.Text = sprintf('Start X: %.2f', obj.ExtState.startX);
+            obj.UI.lblExtEnd.Text = sprintf('End X: %.2f', obj.ExtState.endX);
+        end
+        
+        function actionSelectExtractPlot(obj)
+            nodes = obj.UI.plotTree.SelectedNodes;
+            if isempty(nodes) || ~strcmp(nodes(1).NodeData.type, 'plot'), return; end
+            obj.ExtState.targetPlotId = nodes(1).NodeData.id;
+            obj.UI.lblExtTarget.Text = sprintf('Target: %s', nodes(1).Text);
+        end
+        
+        function actionExportData(obj)
+            if isnan(obj.ExtState.startX) || isnan(obj.ExtState.endX), return; end
+            pStruct = [];
+            for p=1:length(obj.Plots), if strcmp(obj.Plots{p}.id, obj.ExtState.targetPlotId), pStruct = obj.Plots{p}; break; end; end
+            if isempty(pStruct), return; end
+            
+            if ischar(pStruct.x), xSignal = pStruct.x; else, xSignal = pStruct.x{1}; end
+            xV = obj.fetchSignal(xSignal); idx = (xV >= obj.ExtState.startX) & (xV <= obj.ExtState.endX);
+            if sum(idx) == 0, return; end
+            
+            expData = xV(idx); hdr = {xSignal};
+            for y=1:length(pStruct.y)
+                yV = obj.fetchSignal(pStruct.y{y}); expData = [expData, yV(idx)]; hdr{end+1} = pStruct.y{y};
+            end
+            t = array2table(expData, 'VariableNames', hdr); writetable(t, obj.UI.extFile.Value);
+            obj.logMessage('SYSTEM', 'CSV Range Data Subset Export Complete.');
+        end
+        
+        %% Lists Filtering & Form Scripts
+        function actionYTableEdit(obj, ev)
+            r = ev.Indices(1); c = ev.Indices(2);
+            lbl = obj.UI.pltYTable.Data{r, 2};
+            fn = fieldnames(obj.DataVars); key = '';
+            for i = 1:length(fn), if strcmp(char(obj.DataVars.(fn{i}).label), lbl), key = fn{i}; break; end; end
+            
+            idx = find(strcmp(obj.SelectedYSignals, key));
+            
+            if c == 1
+                if ev.NewData
+                    if isempty(idx)
+                        obj.SelectedYSignals{end+1} = key;
+                        defX = char(obj.UI.pltXList.Value);
+                        obj.SelectedXSignals{end+1} = defX;
+                        obj.SelectedYScales(end+1) = obj.UI.pltYTable.Data{r, 4};
+                        obj.SelectedYStyles{end+1} = obj.UI.pltYTable.Data{r, 5};
+                        obj.SelectedYLeg(end+1) = obj.UI.pltYTable.Data{r, 6};
+                        
+                        if isfield(obj.DataVars, defX)
+                            obj.UI.pltYTable.Data{r, 3} = char(obj.DataVars.(defX).label);
+                        end
+                    end
+                else
+                    if ~isempty(idx)
+                        obj.SelectedYSignals(idx) = [];
+                        obj.SelectedXSignals(idx) = [];
+                        obj.SelectedYScales(idx) = [];
+                        obj.SelectedYStyles(idx) = [];
+                        obj.SelectedYLeg(idx) = [];
+                    end
+                end
+            elseif c == 3 && ~isempty(idx)
+                xLbl = ev.NewData;
+                xKey = '';
+                for i = 1:length(fn), if strcmp(char(obj.DataVars.(fn{i}).label), xLbl), xKey = fn{i}; break; end; end
+                obj.SelectedXSignals{idx} = xKey;
+            elseif c == 4 && ~isempty(idx)
+                obj.SelectedYScales(idx) = ev.NewData;
+            elseif c == 5 && ~isempty(idx)
+                obj.SelectedYStyles{idx} = ev.NewData;
+            elseif c == 6 && ~isempty(idx)
+                obj.SelectedYLeg(idx) = ev.NewData;
+            end
+        end
+
+        function syncUILists(obj)
+            fn = fieldnames(obj.DataVars); 
+            
+            lbls = cell(1, length(fn)); 
+            for i=1:length(fn), lbls{i} = char(obj.DataVars.(fn{i}).label); end
+            
+            obj.UI.pltXList.Items = lbls; obj.UI.pltXList.ItemsData = fn;
+            obj.UI.pltZList.Items = lbls; obj.UI.pltZList.ItemsData = fn;
+            obj.UI.pltCList.Items = lbls; obj.UI.pltCList.ItemsData = fn;
+            obj.UI.pltSList.Items = lbls; obj.UI.pltSList.ItemsData = fn;
+            
+            if isempty(lbls)
+                obj.UI.pltYTable.ColumnFormat{3} = {'-- None --'};
+            else
+                obj.UI.pltYTable.ColumnFormat{3} = lbls(:)'; 
+            end
+            
+            d = cell(length(fn), 6);
+            for i=1:length(fn)
+                idx = find(strcmp(obj.SelectedYSignals, fn{i}), 1);
+                if ~isempty(idx)
+                    xKey = obj.SelectedXSignals{idx};
+                    if isempty(xKey) || ~isfield(obj.DataVars, xKey)
+                        xLabel = '-- None --';
+                    else
+                        xLabel = char(obj.DataVars.(xKey).label);
+                    end
+                    d(i,:) = {true, lbls{i}, xLabel, obj.SelectedYScales(idx), obj.SelectedYStyles{idx}, obj.SelectedYLeg(idx)};
+                else
+                    defaultXLabel = ''; 
+                    if ~isempty(obj.UI.pltXList.Value)
+                        val = char(obj.UI.pltXList.Value);
+                        if isfield(obj.DataVars, val)
+                            defaultXLabel = char(obj.DataVars.(val).label); 
+                        end
+                    end
+                    d(i,:) = {false, lbls{i}, defaultXLabel, 1, '-', true};
+                end
+            end
+            obj.UI.pltYTable.Data = d;
+        end
+        
+        function actionFilterList(obj, axisStr)
+            txtField = sprintf('plt%sSearch', upper(axisStr)); txt = lower(char(obj.UI.(txtField).Value));
+            fn = fieldnames(obj.DataVars);
+            if strcmp(axisStr, 'y')
+                d = cell(0, 6); rowIdx = 1;
+                for i = 1:length(fn)
+                    lbl = char(obj.DataVars.(fn{i}).label);
+                    if isempty(txt) || contains(lower(lbl), txt) || contains(lower(fn{i}), txt)
+                        idx = find(strcmp(obj.SelectedYSignals, fn{i}), 1);
+                        if ~isempty(idx)
+                            xKey = obj.SelectedXSignals{idx};
+                            if isempty(xKey) || ~isfield(obj.DataVars, xKey)
+                                xLabel = '-- None --';
+                            else
+                                xLabel = char(obj.DataVars.(xKey).label);
+                            end
+                            d(rowIdx, :) = {true, lbl, xLabel, obj.SelectedYScales(idx), obj.SelectedYStyles{idx}, obj.SelectedYLeg(idx)};
+                        else
+                            defaultXLabel = ''; 
+                            if ~isempty(obj.UI.pltXList.Value)
+                                val = char(obj.UI.pltXList.Value);
+                                if isfield(obj.DataVars, val)
+                                    defaultXLabel = char(obj.DataVars.(val).label); 
+                                end
+                            end
+                            d(rowIdx, :) = {false, lbl, defaultXLabel, 1, '-', true};
+                        end
+                        rowIdx = rowIdx + 1;
+                    end
+                end
+                obj.UI.pltYTable.Data = d;
+            else
+                listComp = sprintf('plt%sList', upper(axisStr)); list = obj.UI.(listComp);
+                matches = {}; lbls = {};
+                for i = 1:length(fn)
+                    lbl = char(obj.DataVars.(fn{i}).label);
+                    if isempty(txt) || contains(lower(lbl), txt) || contains(lower(fn{i}), txt)
+                        matches{end+1} = fn{i}; lbls{end+1} = lbl;
+                    end
+                end
+                list.Items = lbls; list.ItemsData = matches;
+            end
+        end
+        
+        function actionExportScript(obj)
+            [file, path] = uiputfile('*.m', 'Save Render Script', 'telemetry_render_pro.m');
+            if file == 0, return; end
+            fid = fopen(fullfile(path, file), 'w');
+            
+            fprintf(fid, '%% STANDALONE PROCEDURAL REPRODUCTION CODE\nclearvars; clc;\n\n%% 1. Loading Vectors\n');
+            for f = 1:length(obj.LoadedFiles), fprintf(fid,'load(''%s'');\n', strrep(obj.LoadedFiles{f},'''','''''')); end
+            
+            fprintf(fid, '\n%% 2. Formula Evaluation\n');
+            dKeys = fieldnames(obj.SavedDerivedLogic);
+            for i=1:length(dKeys)
+                s = obj.SavedDerivedLogic.(dKeys{i}); fprintf(fid, '%s = %s;\n', s.name, s.expr);
+            end
+            
+            fprintf(fid, '\n%% 3. Plot Manifest Loop Execution\n');
+            for i = 1:length(obj.Plots)
+                p = obj.Plots{i};
+                if ischar(p.x), p.x = repmat({p.x}, 1, length(p.y)); end
+                
+                fprintf(fid, '\nfigure(%d); ax = subplot(%d, %d, %d); hold(ax, ''on'');\n', p.f, p.r, p.c, p.p);
+                
+                if p.is4D
+                    fprintf(fid, 'cV = %s;\n', p.cVar);
+                    fprintf(fid, 'validC = cV(~isnan(cV));\n');
+                    fprintf(fid, 'uStates = unique(validC);\n');
+                    fprintf(fid, 'numStates = length(uStates); if numStates == 0, numStates = 1; end\n');
+                    
+                    fprintf(fid, 'colormap(ax, lines(numStates));\n');
+                    fprintf(fid, 'cMapped = zeros(size(validC));\n');
+                    fprintf(fid, 'for k = 1:numStates, cMapped(validC == uStates(k)) = k; end\n');
+                    fprintf(fid, 'caxis(ax, [1, numStates]);\n');
+                    
+                    if isfield(p, 'sVar') && ~isempty(p.sVar) && ~isempty(p.tickVals)
+                        fprintf(fid, 'cb = colorbar(ax);\n');
+                        fprintf(fid, 'cb.Ticks = 1:numStates;\n');
+                        
+                        labelStr = '{';
+                        for lblIdx = 1:length(p.tickLabels)
+                            if lblIdx > 1, labelStr = [labelStr ', ']; end
+                            labelStr = [labelStr '''' p.tickLabels{lblIdx} ''''];
+                        end
+                        labelStr = [labelStr '}'];
+                        fprintf(fid, 'cb.TickLabels = %s;\n', labelStr);
+                    end
+                    
+                    fprintf(fid, 'surface(ax, [%s, %s], [%s, %s], zeros(length(%s),2), [cMapped, cMapped], ''FaceColor'',''none'', ''EdgeColor'',''flat'', ''LineWidth'', %g);\n', ...
+                        p.x{1}, p.x{1}, p.y{1}, p.y{1}, p.x{1}, p.lW);
+                else
+                    for j = 1:length(p.y)
+                        yScale = 1; if isfield(p, 'yScales') && length(p.yScales) >= j, yScale = p.yScales(j); end
+                        yStyle = p.lS; if isfield(p, 'yStyles') && length(p.yStyles) >= j, yStyle = p.yStyles{j}; end
+                        [cleanLS, cleanMarker] = obj.parseLineStyle(yStyle);
+                        
+                        fprintf(fid, 'yV = %s * %g;\n', p.y{j}, yScale);
+                        fprintf(fid, 'plot(ax, %s, yV, ''LineWidth'', %g, ''LineStyle'', ''%s'', ''Marker'', ''%s'', ''DisplayName'', ''%s'');\n', ...
+                            p.x{j}, p.lW, cleanLS, cleanMarker, p.y{j});
+                    end
+                end
+                
+                parsedTitle = obj.fixLaTeXColors(p.title);
+                if ~isempty(p.title), fprintf(fid, 'title(ax, ''%s'', ''Interpreter'', ''tex'');\n', parsedTitle); end
+                if p.grid, fprintf(fid, 'grid(ax, ''on'');\n'); end
+            end
+            fclose(fid);
+            obj.logMessage('SYSTEM', 'Standalone generation reproduction script written successfully.');
+        end
+    end
+end

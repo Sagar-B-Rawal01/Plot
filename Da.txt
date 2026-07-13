@@ -1,0 +1,60 @@
+% Event text (same for every point)
+N = numel(ph.XData);
+
+if strcmpi(eventValue,'DisplayName')
+    eventValue = ph.DisplayName;
+end
+
+evt = repmat({char(eventValue)}, N, 1);
+
+% Add event row
+dtt.DataTipRows(end+1) = dataTipTextRow(eventLabel, evt);
+
+
+function addDataTips(ph, axisLabels, varargin)
+% axisLabels = {"Time","Speed"} or {"X","Y","Z"}
+
+p = inputParser;
+addParameter(p,'EventLabel','ev');
+addParameter(p,'EventValue','DisplayName');
+parse(p,varargin{:});
+
+eventLabel = string(p.Results.EventLabel);
+eventValue = string(p.Results.EventValue);
+
+if strcmpi(eventValue,'DisplayName')
+    eventValue = string(ph.DisplayName);
+end
+
+%----- Update DataTipTemplate -----
+dtt = ph.DataTipTemplate;
+
+% Rename existing labels
+dtt.DataTipRows(1).Label = axisLabels{1};
+dtt.DataTipRows(2).Label = axisLabels{2};
+
+if numel(axisLabels)>=3 && numel(dtt.DataTipRows)>=3
+    dtt.DataTipRows(3).Label = axisLabels{3};
+end
+
+% Remove previously added custom row (optional)
+while numel(dtt.DataTipRows) > numel(axisLabels)
+    dtt.DataTipRows(end) = [];
+end
+
+% Add custom event row
+N = numel(ph.XData);
+evt = repmat(eventValue,N,1);
+dtt.DataTipRows(end+1) = dataTipTextRow(eventLabel,evt);
+
+%----- Create datatips -----
+if isprop(ph,'ZData') && ~isempty(ph.ZData)
+    for k = 1:N
+        datatip(ph,ph.XData(k),ph.YData(k),ph.ZData(k));
+    end
+else
+    for k = 1:N
+        datatip(ph,ph.XData(k),ph.YData(k));
+    end
+end
+end
