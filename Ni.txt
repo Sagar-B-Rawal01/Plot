@@ -1,0 +1,467 @@
+function nicholsExplorer(varargin)
+% NICHOLSEXPLORER Interactive Nichols chart and control system analysis tool.
+% 
+% Inputs:
+%   nicholsExplorer(G) 
+%       where G is an LTI model (tf, zpk, ss, frd)
+%
+%   nicholsExplorer({G1, G2, ...}, {'Name1', 'Name2', ...})
+%       where the first argument is a cell array of LTI models and 
+%       the second argument is a cell array of string/char names.
+
+    %% --- Input Parsing and Validation ---
+    errorMsg = 'Invalid inputs. Use nicholsExplorer(G) or nicholsExplorer({G1, G2}, {''Plant'', ''Controller''})';
+    
+    models = {};
+    names = {};
+    
+    if nargin == 1
+        in = varargin{1};
+        if iscell(in)
+            models = in;
+            names = arrayfun(@(x) sprintf('System %d', x), 1:length(models), 'UniformOutput', false);
+        else
+            models = {in};
+            names = {'System 1'};
+        end
+    elseif nargin == 2
+        models = varargin{1};
+        names = varargin{2};
+        if ~iscell(models) || ~iscell(names) || length(models) ~= length(names)
+            error(errorMsg);
+        end
+    else
+        error(errorMsg);
+    end
+    
+    % Validate that all models are valid LTI objects and SISO
+    for i = 1:length(models)
+        if ~isa(models{i}, 'lti')
+            error('All models must be valid LTI objects (tf, zpk, ss, frd).');
+        end
+        sz = size(models{i});
+        if sz(1) ~= 1 || sz(2) ~= 1
+            error('Only SISO (Single-Input Single-Output) systems are supported.');
+        end
+    end
+    
+    %% --- State Variables ---
+    numModels = length(models);
+    currentIdx = 1;
+    currentFreqHz = 0.1; % Default starting frequency
+    fMin = 0.01;
+    fMax = 1.0;
+    
+    sysColors = lines(numModels); % Distinct colors for each system
+    
+    % Graphics handles
+    hFig = [];
+    hAxes = [];
+    hLines = gobjects(numModels, 1);
+    
+    % Marker and Datatip handles
+    hMarker = [];
+    hDatatip = [];
+    
+    % Margin graphic handles
+    hMarginLines = [];
+    hMarginLabels = [];
+    
+    % UI Controls
+    hTable = [];
+    hDropdown = [];
+    hSlider = [];
+    hEdit = [];
+    
+    %% --- UI Initialization ---
+    createGUI();
+    initPlot();
+    updateSelection();
+    
+    %% --- Nested Functions for GUI Setup ---
+    function createGUI()
+        % Create the main figure
+        hFig = uifigure('Name', 'Nichols Explorer', 'Position', [100, 100, 1200, 700]);
+        
+        % Main Grid Layout
+        mainGrid = uigridlayout(hFig, [2, 2]);
+        mainGrid.RowHeight = {'1x', 80};
+        mainGrid.ColumnWidth = {'3x', '1x'};
+        
+        % Axes panel
+        axPanel = uipanel(mainGrid);
+        axPanel.Layout.Row = 1;
+        axPanel.Layout.Column = 1;
+        axPanel.BorderType = 'none';
+        
+        hAxes = uiaxes(axPanel, 'Position', [0 0 1 1]);
+        % Make axes fill the panel dynamically
+        hAxes.Units = 'normalized';
+        hAxes.Position = [0.08 0.08 0.88 0.88];
+        title(hAxes, 'Nichols Chart', 'FontSize', 14, 'FontWeight', 'bold');
+        xlabel(hAxes, 'Open-Loop Phase (deg)', 'FontSize', 12);
+        ylabel(hAxes, 'Open-Loop Gain (dB)', 'FontSize', 12);
+        grid(hAxes, 'on');
+        hold(hAxes, 'on');
+        
+        % Right Information Panel
+        infoPanel = uipanel(mainGrid, 'Title', 'System Analysis', 'FontSize', 12, 'FontWeight', 'bold');
+        infoPanel.Layout.Row = [1 2];
+        infoPanel.Layout.Column = 2;
+        
+        hTable = uitable(infoPanel);
+        hTable.Units = 'normalized';
+        hTable.Position = [0.05 0.02 0.9 0.95];
+        hTable.ColumnName = {'Property', 'Value'};
+        hTable.RowName = {};
+        hTable.ColumnWidth = {'auto', '1x'};
+        
+        % Bottom Controls Panel
+        ctrlGrid = uigridlayout(mainGrid, [2, 4]);
+        ctrlGrid.Layout.Row = 2;
+        ctrlGrid.Layout.Column = 1;
+        ctrlGrid.RowHeight = {'1x', '1x'};
+        ctrlGrid.ColumnWidth = {150, '1x', 120, 60};
+        
+        % Dropdown
+        uilabel(ctrlGrid, 'Text', 'Active System:', 'HorizontalAlignment', 'right');
+        hDropdown = uidropdown(ctrlGrid, 'Items', names, 'Value', names{1});
+        hDropdown.Layout.Column = [2 4];
+        hDropdown.ValueChangedFcn = @cb_dropdown;
+        
+        % Slider and Edit box row
+        uilabel(ctrlGrid, 'Text', 'Frequency (Hz):', 'HorizontalAlignment', 'right');
+        hSlider = uislider(ctrlGrid, 'Limits', [fMin, fMax], 'Value', currentFreqHz);
+        hSlider.MajorTicks = linspace(fMin, fMax, 10);
+        hSlider.ValueChangingFcn = @cb_sliderChanging;
+        hSlider.ValueChangedFcn = @cb_sliderChanged;
+        
+        hEdit = uieditfield(ctrlGrid, 'numeric', 'Value', currentFreqHz);
+        hEdit.Limits = [fMin, fMax];
+        hEdit.ValueChangedFcn = @cb_edit;
+        
+        uilabel(ctrlGrid, 'Text', 'Hz');
+    end
+
+    %% --- Nested Functions for Plotting and Updates ---
+    function initPlot()
+        % Plot all Nichols responses
+        for i = 1:numModels
+            sys = models{i};
+            
+            % Use margin command internally to get phase handling but plot manually
+            % to ensure all elements reside strictly in our uiaxes cleanly
+            [mag, phase, wout] = bode(sys);
+            mag = squeeze(mag);
+            phase = squeeze(phase);
+            wout = squeeze(wout);
+            
+            % Convert mag to dB
+            mag_dB = 20*log10(mag);
+            
+            % Plot line
+            hLines(i) = plot(hAxes, phase, mag_dB, 'Color', sysColors(i,:), ...
+                'LineWidth', 1.5, 'DisplayName', names{i});
+        end
+        
+        % Set up the marker for the active system
+        hMarker = plot(hAxes, 0, 0, 'ko', 'MarkerSize', 8, ...
+            'MarkerFaceColor', 'y', 'LineWidth', 1.5, ...
+            'DisplayName', 'Selected Freq', 'Tag', 'dynamicMarker');
+            
+        % Set up the text datatip
+        hDatatip = text(hAxes, 0, 0, '', 'BackgroundColor', [1 1 0.9], ...
+            'EdgeColor', 'k', 'Margin', 3, 'FontSize', 10, ...
+            'VerticalAlignment', 'bottom', 'HorizontalAlignment', 'left', ...
+            'Clipping', 'on');
+            
+        legend(hAxes, 'Location', 'southwest');
+        
+        % Add standard Nichols grid over it
+        nicholsGrid();
+        
+        % Frame the plot exactly around the 0.01 Hz to 1 Hz region
+        applyZoomBounds();
+    end
+
+    function applyZoomBounds()
+        % Define the frequency vector strictly between fMin and fMax
+        w_rad = logspace(log10(fMin * 2 * pi), log10(fMax * 2 * pi), 200);
+        
+        minPhase = inf; maxPhase = -inf;
+        minMag = inf;   maxMag = -inf;
+        
+        % Find the boundary limits within the 0.01 to 1 Hz range across all systems
+        for i = 1:numModels
+            [mag, phase] = bode(models{i}, w_rad);
+            mag_dB = squeeze(20*log10(mag));
+            phase = squeeze(phase);
+            
+            minPhase = min(minPhase, min(phase));
+            maxPhase = max(maxPhase, max(phase));
+            minMag = min(minMag, min(mag_dB));
+            maxMag = max(maxMag, max(mag_dB));
+        end
+        
+        % Apply a 15% visual offset/padding to the calculated boundaries
+        phaseRange = maxPhase - minPhase;
+        magRange = maxMag - minMag;
+        
+        % Fallbacks in case the range is perfectly flat (0)
+        if phaseRange == 0; phaseRange = 100; end
+        if magRange == 0; magRange = 20; end
+        
+        phasePadding = phaseRange * 0.15;
+        magPadding = magRange * 0.15;
+        
+        xlim(hAxes, [minPhase - phasePadding, maxPhase + phasePadding]);
+        ylim(hAxes, [minMag - magPadding, maxMag + magPadding]);
+    end
+
+    function updateSelection()
+        % Update colors and linewidths to highlight active system
+        for i = 1:numModels
+            if i == currentIdx
+                hLines(i).LineWidth = 3;
+                uistack(hLines(i), 'top'); % Bring to front
+            else
+                hLines(i).LineWidth = 1;
+            end
+        end
+        
+        uistack(hMarker, 'top');
+        uistack(hDatatip, 'top');
+        
+        updateInfoPanel();
+        drawMargins();
+        updateFrequency(currentFreqHz);
+    end
+
+    function updateFrequency(freqHz)
+        % Ensure frequency is within bounds
+        freqHz = max(min(freqHz, fMax), fMin);
+        currentFreqHz = freqHz;
+        
+        % Update UI controls silently (avoid re-triggering callbacks)
+        hSlider.Value = freqHz;
+        hEdit.Value = freqHz;
+        
+        sys = models{currentIdx};
+        
+        % Convert Hz to rad/s for evaluation
+        w_rad = freqHz * 2 * pi;
+        
+        try
+            % Evaluate frequency response exactly
+            [mag, phase] = bode(sys, w_rad);
+            magdB = 20*log10(mag);
+            
+            % To place the marker correctly, we need the unwrapped phase 
+            % corresponding to the main trace. bode() handles it well.
+            % Update Marker Position
+            hMarker.XData = phase;
+            hMarker.YData = magdB;
+            
+            % Update Datatip
+            txt = sprintf('\\bf%s\\rm\nFreq: %.3f Hz (%.2f rad/s)\nMag: %.2f dB\nPhase: %.2f\\circ', ...
+                names{currentIdx}, freqHz, w_rad, magdB, phase);
+            
+            hDatatip.String = txt;
+            hDatatip.Position = [phase, magdB, 0];
+        catch ME
+            warning('Error evaluating frequency response: %s', ME.message);
+        end
+    end
+
+    function updateInfoPanel()
+        sys = models{currentIdx};
+        
+        % Compute margins and stats
+        try
+            S = allmargin(sys);
+            bw = bandwidth(sys);
+            dc = dcgain(sys);
+            if dc == 0 || isinf(dc)
+                dcdB = dc;
+            else
+                dcdB = 20*log10(abs(dc));
+            end
+            peakGain = getPeakGain(sys);
+            if ~isinf(peakGain)
+                peakGain = 20*log10(peakGain);
+            end
+            
+            % Gather low/high frequency asymptotes
+            w = logspace(-3, 3, 100);
+            [mag, ~] = bode(sys, w);
+            lfGain = 20*log10(mag(1));
+            hfGain = 20*log10(mag(end));
+            
+            stableStr = 'Yes';
+            if ~isstable(sys)
+                stableStr = 'No';
+            end
+            
+            % Format table data
+            data = {
+                'System Name', names{currentIdx};
+                'Stable (Closed Loop)', stableStr;
+                'Bandwidth (rad/s)', num2str(bw, '%.3f');
+                'DC Gain (dB)', num2str(dcdB, '%.2f');
+                'Peak Gain (dB)', num2str(peakGain, '%.2f');
+                'Low-Freq Gain (dB)', num2str(lfGain, '%.2f');
+                'High-Freq Gain (dB)', num2str(hfGain, '%.2f');
+                'Delay Margin (s)', num2str(min(S.DelayMargin), '%.4f');
+                'Min Gain Margin (dB)', num2str(20*log10(S.GainMargin(1)), '%.2f');
+                'Min Phase Margin (deg)', num2str(S.PhaseMargin(1), '%.2f');
+                'Num Gain Crossovers', num2str(length(S.GMFrequency));
+                'Num Phase Crossovers', num2str(length(S.PMFrequency));
+            };
+            
+            % Append all crossovers if requested
+            if ~isempty(S.GMFrequency)
+                gStr = sprintf('%.2f ', 20*log10(S.GainMargin));
+                data(end+1,:) = {'All GMs (dB)', gStr};
+                gwStr = sprintf('%.2f ', S.GMFrequency);
+                data(end+1,:) = {'GM Freqs (rad/s)', gwStr};
+            end
+            if ~isempty(S.PMFrequency)
+                pStr = sprintf('%.2f ', S.PhaseMargin);
+                data(end+1,:) = {'All PMs (deg)', pStr};
+                pwStr = sprintf('%.2f ', S.PMFrequency);
+                data(end+1,:) = {'PM Freqs (rad/s)', pwStr};
+            end
+            
+            hTable.Data = data;
+            
+        catch ME
+            hTable.Data = {'Error', ME.message};
+        end
+    end
+
+    function drawMargins()
+        % Clear existing margin graphics
+        delete(hMarginLines(isgraphics(hMarginLines)));
+        delete(hMarginLabels(isgraphics(hMarginLabels)));
+        hMarginLines = [];
+        hMarginLabels = [];
+        
+        sys = models{currentIdx};
+        color = sysColors(currentIdx, :);
+        
+        try
+            S = allmargin(sys);
+            
+            % Primary Phase Margin (closest to 0 dB)
+            if ~isempty(S.PhaseMargin) && ~isnan(S.PhaseMargin(1)) && ~isinf(S.PhaseMargin(1))
+                pm = S.PhaseMargin(1);
+                wpc = S.PMFrequency(1);
+                
+                % Phase crossover is at -180 + PM
+                targetPhase = -180 + pm;
+                
+                % Draw dashed line along 0 dB axis from -180 to targetPhase
+                l1 = plot(hAxes, [-180, targetPhase], [0, 0], '--', ...
+                    'Color', color, 'LineWidth', 2, 'HandleVisibility', 'off');
+                t1 = text(hAxes, -180 + pm/2, 2, sprintf('PM: %.1f\\circ', pm), ...
+                    'Color', color, 'FontSize', 10, 'HorizontalAlignment', 'center');
+                
+                hMarginLines(end+1) = l1;
+                hMarginLabels(end+1) = t1;
+            end
+            
+            % Primary Gain Margin (closest to -180 deg)
+            if ~isempty(S.GainMargin) && ~isnan(S.GainMargin(1)) && ~isinf(S.GainMargin(1))
+                gm = S.GainMargin(1);
+                wgc = S.GMFrequency(1);
+                
+                gm_dB = 20*log10(gm);
+                % The actual gain at the phase crossover is -gm_dB
+                targetMag = -gm_dB;
+                
+                % Identify the correct phase crossing multiple of -180
+                % We evaluate phase at wgc to find the right branch
+                [~, p] = bode(sys, wgc);
+                crossPhase = round(p / 180) * 180; % Snap to nearest 180 multiple
+                
+                l2 = plot(hAxes, [crossPhase, crossPhase], [0, targetMag], '--', ...
+                    'Color', color, 'LineWidth', 2, 'HandleVisibility', 'off');
+                t2 = text(hAxes, crossPhase + 5, targetMag/2, sprintf('GM: %.1f dB', gm_dB), ...
+                    'Color', color, 'FontSize', 10);
+                
+                hMarginLines(end+1) = l2;
+                hMarginLabels(end+1) = t2;
+            end
+            
+        catch
+            % If margin calculation fails, fail silently graphically
+        end
+    end
+
+    function nicholsGrid()
+        % Generates a static M-circle and N-circle background for Nichols chart
+        % so it doesn't interfere with our continuous datatip
+        m_vals = [12 6 3 1 0 -1 -3 -6 -12 -20 -40];
+        phases = linspace(-360, 0, 200);
+        
+        for m = m_vals
+            M = 10^(m/20);
+            % Avoid singularity at M=1 by using a tiny offset
+            if M == 1
+                M = 1.0001; 
+            end
+            
+            center = -M^2 / (M^2 - 1);
+            radius = M / abs(M^2 - 1);
+            
+            % Generate circle in Nyquist plane
+            th = linspace(0, 2*pi, 200);
+            NyqReal = center + radius*cos(th);
+            NyqImag = radius*sin(th);
+            
+            % Map to Nichols plane
+            NicholsMag = 20*log10(sqrt(NyqReal.^2 + NyqImag.^2));
+            NicholsPhase = atan2(NyqImag, NyqReal) * 180/pi;
+            
+            % Shift phase to standard [-360, 0] Nichols window
+            NicholsPhase(NicholsPhase > 0) = NicholsPhase(NicholsPhase > 0) - 360;
+            
+            % Sort to prevent criss-cross lines
+            [NicholsPhase, sortIdx] = sort(NicholsPhase);
+            NicholsMag = NicholsMag(sortIdx);
+            
+            plot(hAxes, NicholsPhase, NicholsMag, ':', 'Color', [0.8 0.8 0.8], ...
+                'HandleVisibility', 'off', 'HitTest', 'off');
+            plot(hAxes, NicholsPhase - 360, NicholsMag, ':', 'Color', [0.8 0.8 0.8], ...
+                'HandleVisibility', 'off', 'HitTest', 'off');
+        end
+    end
+
+    %% --- Callbacks ---
+    function cb_dropdown(~, event)
+        idx = find(strcmp(names, event.Value), 1);
+        if ~isempty(idx)
+            currentIdx = idx;
+            updateSelection();
+        end
+    end
+
+    function cb_sliderChanging(~, event)
+        % For smooth continuous updating while dragging
+        updateFrequency(event.Value);
+    end
+
+    function cb_sliderChanged(~, event)
+        % Finalized drop
+        updateFrequency(event.Value);
+    end
+
+    function cb_edit(~, event)
+        % Triggered on Enter press in the numeric field
+        val = event.Value;
+        if isnan(val) || ~isnumeric(val)
+            val = currentFreqHz;
+        end
+        updateFrequency(val);
+    end
+end
