@@ -1,0 +1,46 @@
+{
+    "Doxygen File Header": {
+        "prefix": "!file",
+        "body": [
+            "!> @file ${1:filename.f90}",
+            "!> @brief ${2:Overall description of what this file contains.}",
+            "!> @author ${3:Your Name}",
+            "!> @date $CURRENT_YEAR-$CURRENT_MONTH-$CURRENT_DATE",
+            "!> @details ${4:Detailed explanation of the file's purpose.}"
+        ],
+        "description": "Generates a Doxygen header for the top of a file"
+    },
+    "Doxygen Subroutine Comment": {
+        "prefix": "!sub",
+        "body": [
+            "!> @brief ${1:Short summary of the subroutine.}",
+            "!> ",
+            "!> @details ${2:Deeper explanation of the math or logic.}",
+            "!> ",
+            "!> @param[in] ${3:input_var} ${4:Description of input}",
+            "!> @param[out] ${5:output_var} ${6:Description of output}",
+            "!> ",
+            "!> @note ${7:Any special notes or warnings.}"
+        ],
+        "description": "Generates a standard Doxygen template for a subroutine"
+    },
+    "Doxygen Function Comment": {
+        "prefix": "!func",
+        "body": [
+            "!> @brief ${1:Short summary of the function.}",
+            "!> ",
+            "!> @param[in] ${2:input_var} ${3:Description of input}",
+            "!> @return ${4:Description of the final calculated value.}",
+            "!> ",
+            "!> @warning ${5:Warnings regarding valid input ranges.}"
+        ],
+        "description": "Generates a standard Doxygen template for a function"
+    },
+    "Doxygen Single Param": {
+        "prefix": "!p",
+        "body": [
+            "!> @param[in,out] ${1:var_name} ${2:Description}"
+        ],
+        "description": "Adds an extra parameter line"
+    }
+}
