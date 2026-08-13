@@ -1,0 +1,304 @@
+clc
+clear
+close all
+
+%% =========================================================
+% SIGNAL A
+% ==========================================================
+
+FsA = 10;
+
+tA = 1:1/FsA:100;
+
+rng(10)
+
+% Unique/non-repeating signal
+A = sin(0.35*tA) ...
+    + 0.35*sin(0.83*tA + 0.7) ...
+    + 0.18*sin(1.47*tA + 1.2);
+
+% Slowly varying amplitude
+A = A .* (1 + 0.25*sin(0.07*tA));
+
+% Small noise
+A = A + 0.02*randn(size(tA));
+
+
+%% =========================================================
+% SIGNAL B
+% ==========================================================
+
+FsB = 80;
+
+% A segment from 40 to 60 sec
+tB1 = 0:1/FsB:20;
+
+B1 = interp1(tA,A,tB1+40,'pchip');
+
+% Small noise on matching segment
+B1 = B1 + 0.03*randn(size(B1));
+
+% Random/noise signal after matching segment
+tB2 = 20+1/FsB:1/FsB:30;
+
+B2 = 2*randn(size(tB2));
+
+% Complete B
+tB = [tB1 tB2];
+B  = [B1 B2];
+
+
+%% =========================================================
+% 3 x 1 PLOT
+% ==========================================================
+
+figure
+
+
+%% ---------------------------------------------------------
+% 1. Signal A
+% ----------------------------------------------------------
+
+subplot(3,1,1)
+
+plot(tA,A,'b','LineWidth',1)
+
+grid on
+
+xlabel('Time (s)')
+ylabel('Amplitude')
+
+title('Signal A')
+
+
+%% ---------------------------------------------------------
+% 2. Signal B
+% ----------------------------------------------------------
+
+subplot(3,1,2)
+
+plot(tB,B,'r','LineWidth',1)
+
+grid on
+
+xlabel('Time (s)')
+ylabel('Amplitude')
+
+title('Signal B')
+
+disp(' ')
+disp('Select START and END of the clean matching segment in Signal B')
+disp('Click two points on the SECOND subplot.')
+disp(' ')
+
+
+%% =========================================================
+% SELECT CLEAN SEGMENT FROM B
+% ==========================================================
+
+subplot(3,1,2)
+
+[xSelected,~] = ginput(2);
+
+% Sort selected points
+xSelected = sort(xSelected);
+
+tB_start = xSelected(1);
+tB_end   = xSelected(2);
+
+
+%% ---------------------------------------------------------
+% Extract selected segment from B
+% ----------------------------------------------------------
+
+idxB = tB >= tB_start & tB <= tB_end;
+
+tB_match = tB(idxB);
+B_match  = B(idxB);
+
+
+%% ---------------------------------------------------------
+% Show selected region
+% ----------------------------------------------------------
+
+hold on
+
+xline(tB_start,'k--','LineWidth',1.2)
+xline(tB_end,'k--','LineWidth',1.2)
+
+plot(tB_match,B_match,'k','LineWidth',1.5)
+
+
+%% =========================================================
+% ALIGN SELECTED B SEGMENT WITH A
+% ==========================================================
+
+[timeShift,bestCorr] = ...
+    alignSelectedSegment(tA,A,tB_match,B_match);
+
+
+%% =========================================================
+% SHIFT COMPLETE B
+% ==========================================================
+
+tB_shifted = tB + timeShift;
+
+
+%% =========================================================
+% THIRD SUBPLOT
+% ==========================================================
+
+subplot(3,1,3)
+
+plot(tA,A,'b','LineWidth',1.2)
+
+hold on
+
+plot(tB_shifted,B,'r--','LineWidth',1.2)
+
+grid on
+
+xlabel('Time (s)')
+ylabel('Amplitude')
+
+legend('Signal A','Signal B shifted')
+
+title(sprintf( ...
+    'A and B after alignment | Shift = %.4f s | Correlation = %.4f', ...
+    timeShift,bestCorr))
+
+
+%% =========================================================
+% DISPLAY RESULT
+% ==========================================================
+
+fprintf('\n')
+fprintf('========================================\n')
+fprintf('Selected B segment\n')
+fprintf('Start = %.4f s\n',tB_start)
+fprintf('End   = %.4f s\n',tB_end)
+fprintf('Duration = %.4f s\n',tB_end-tB_start)
+fprintf('----------------------------------------\n')
+fprintf('Detected time shift = %.4f s\n',timeShift)
+fprintf('Best correlation    = %.4f\n',bestCorr)
+fprintf('========================================\n')
+
+
+%% =========================================================
+% FUNCTION
+% ==========================================================
+
+function [timeShift,bestCorr] = ...
+            alignSelectedSegment(tA,A,tB_match,B_match)
+
+
+    %% -----------------------------------------------------
+    % Column vectors
+    % ------------------------------------------------------
+
+    tA = tA(:);
+    A  = A(:);
+
+    tB_match = tB_match(:);
+    B_match  = B_match(:);
+
+
+    %% -----------------------------------------------------
+    % Sampling frequencies
+    % ------------------------------------------------------
+
+    FsA = 1/mean(diff(tA));
+    FsB = 1/mean(diff(tB_match));
+
+
+    %% -----------------------------------------------------
+    % Resample B segment to A sampling rate
+    % ------------------------------------------------------
+
+    tB_new = (tB_match(1):1/FsA:tB_match(end))';
+
+    B_new = interp1( ...
+        tB_match, ...
+        B_match, ...
+        tB_new, ...
+        'pchip');
+
+
+    %% -----------------------------------------------------
+    % Resample A to its own grid
+    % ------------------------------------------------------
+
+    tA_new = tA;
+
+
+    %% -----------------------------------------------------
+    % Remove mean
+    % ------------------------------------------------------
+
+    B_new = B_new - mean(B_new);
+
+    B_new = B_new / std(B_new);
+
+
+    %% -----------------------------------------------------
+    % Number of samples in selected B segment
+    % ------------------------------------------------------
+
+    N = length(B_new);
+
+
+    if N > length(A)
+
+        error('Selected B segment is longer than Signal A.')
+
+    end
+
+
+    %% -----------------------------------------------------
+    % Sliding normalized correlation
+    % ------------------------------------------------------
+
+    nSearch = length(A)-N+1;
+
+    corrVal = zeros(nSearch,1);
+
+
+    for k = 1:nSearch
+
+        A_segment = A(k:k+N-1);
+
+        % Remove mean
+        A_segment = A_segment - mean(A_segment);
+
+        % Normalize
+        A_segment = A_segment / std(A_segment);
+
+
+        % Correlation
+        corrVal(k) = ...
+            mean(A_segment .* B_new);
+
+    end
+
+
+    %% -----------------------------------------------------
+    % Find best match
+    % ------------------------------------------------------
+
+    [bestCorr,idx] = max(corrVal);
+
+
+    %% -----------------------------------------------------
+    % Time of matching segment in A
+    % ------------------------------------------------------
+
+    tA_match = tA_new(idx);
+
+
+    %% -----------------------------------------------------
+    % Calculate time shift
+    % ------------------------------------------------------
+
+    timeShift = tA_match - tB_match(1);
+
+end
