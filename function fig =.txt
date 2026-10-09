@@ -1,0 +1,572 @@
+function fig = scatter3DTable(T, opts)
+% SCATTER3DTABLE Create configurable 3D scatter plots from a MATLAB table.
+%
+% INPUTS
+%   T       - MATLAB table.
+%   opts    - Optional structure containing configuration options.
+%
+% OPTIONS
+%   XColumn       : Column name for X axis.
+%   YColumn       : Column name for Y axis.
+%   ZColumn       : Column name for Z axis.
+%
+%   ColorColumn   : Column used for threshold-based color.
+%   Threshold     : Threshold value.
+%   ColorOperator : '<' or '<='.
+%   LowColor      : Color for values below threshold. Default red.
+%   HighColor     : Color for other values. Default blue.
+%
+%   ShapeColumn   : Column used to determine marker shape.
+%   GroupColumn   : Column used to create separate figures.
+%
+%   SeparateFigures : Create a figure for each group.
+%   CombinedFigure  : Also create one combined figure.
+%
+%   MarkerSize    : Base marker size.
+%   EdgeColors    : Optional N-by-3 RGB matrix for combined groups.
+%   GroupSizes    : Optional vector of marker sizes for combined groups.
+%
+%   FigureTitle   : Optional title prefix.
+%   XLabel        : Optional X-axis label.
+%   YLabel        : Optional Y-axis label.
+%   ZLabel        : Optional Z-axis label.
+%
+% OUTPUT
+%   fig - Structure containing figure handles.
+%
+% EXAMPLE
+%   opts.XColumn = 'X';
+%   opts.YColumn = 'Y';
+%   opts.ZColumn = 'Z';
+%   opts.ColorColumn = 'Error';
+%   opts.Threshold = 10;
+%   opts.ShapeColumn = 'Aircraft';
+%   opts.GroupColumn = 'Condition';
+%   opts.SeparateFigures = true;
+%   opts.CombinedFigure = true;
+%
+%   fig = scatter3DTable(T, opts);
+
+    %% Default options
+
+    if nargin < 2 || isempty(opts)
+        opts = struct();
+    end
+
+    opts = setDefault(opts, 'XColumn', '');
+    opts = setDefault(opts, 'YColumn', '');
+    opts = setDefault(opts, 'ZColumn', '');
+
+    opts = setDefault(opts, 'ColorColumn', '');
+    opts = setDefault(opts, 'Threshold', 0);
+    opts = setDefault(opts, 'ColorOperator', '<');
+
+    opts = setDefault(opts, 'LowColor', [1 0 0]);
+    opts = setDefault(opts, 'HighColor', [0 0 1]);
+
+    opts = setDefault(opts, 'ShapeColumn', '');
+    opts = setDefault(opts, 'GroupColumn', '');
+
+    opts = setDefault(opts, 'SeparateFigures', true);
+    opts = setDefault(opts, 'CombinedFigure', false);
+
+    opts = setDefault(opts, 'MarkerSize', 55);
+    opts = setDefault(opts, 'EdgeColors', []);
+    opts = setDefault(opts, 'GroupSizes', []);
+
+    opts = setDefault(opts, 'FigureTitle', '3D Scatter Plot');
+    opts = setDefault(opts, 'XLabel', '');
+    opts = setDefault(opts, 'YLabel', '');
+    opts = setDefault(opts, 'ZLabel', '');
+
+    %% Validate input
+
+    if ~istable(T)
+        error('Input T must be a MATLAB table.');
+    end
+
+    if height(T) == 0
+        error('Input table is empty.');
+    end
+
+    if ~any(strcmp(opts.ColorOperator, {'<', '<='}))
+        error('ColorOperator must be either ''<'' or ''<=''.');
+    end
+
+    required = {opts.XColumn, opts.YColumn, opts.ZColumn};
+
+    if any(cellfun(@isempty, required))
+        error('Specify XColumn, YColumn and ZColumn.');
+    end
+
+    % Validate column names
+    requested = [required, ...
+                 {opts.ColorColumn}, ...
+                 {opts.ShapeColumn}, ...
+                 {opts.GroupColumn}];
+
+    requested = requested(~cellfun(@isempty, requested));
+
+    for k = 1:numel(requested)
+        if ~ismember(requested{k}, T.Properties.VariableNames)
+            error('Column "%s" does not exist in the table.', ...
+                  requested{k});
+        end
+    end
+
+    %% Extract XYZ data
+
+    x = T.(opts.XColumn);
+    y = T.(opts.YColumn);
+    z = T.(opts.ZColumn);
+
+    if ~isnumeric(x) || ~isnumeric(y) || ~isnumeric(z) || ...
+            ~isvector(x) || ~isvector(y) || ~isvector(z)
+        error('X, Y and Z columns must contain numeric vectors.');
+    end
+
+    x = double(x(:));
+    y = double(y(:));
+    z = double(z(:));
+
+    N = height(T);
+
+    if numel(x) ~= N || numel(y) ~= N || numel(z) ~= N
+        error('X, Y and Z columns must have one value per table row.');
+    end
+
+    % Exclude invalid XYZ rows from plotting.
+    valid = isfinite(x) & isfinite(y) & isfinite(z);
+
+    %% Determine threshold-based colors
+
+    if isempty(opts.ColorColumn)
+
+        % If no threshold column is specified, use the low color.
+        isLow = true(N, 1);
+
+    else
+
+        c = T.(opts.ColorColumn);
+
+        if ~isnumeric(c) || ~isvector(c)
+            error('ColorColumn must contain numeric values.');
+        end
+
+        c = double(c(:));
+
+        if numel(c) ~= N
+            error('ColorColumn must have one value per table row.');
+        end
+
+        switch opts.ColorOperator
+            case '<'
+                isLow = c < opts.Threshold;
+            case '<='
+                isLow = c <= opts.Threshold;
+        end
+
+        % Missing or nonfinite threshold values are excluded.
+        valid = valid & isfinite(c);
+
+    end
+
+    %% Determine marker shapes
+
+    if isempty(opts.ShapeColumn)
+
+        shapeValues = ones(N, 1);
+        shapeLabels = {'All points'};
+
+    else
+
+        shapeData = T.(opts.ShapeColumn);
+
+        [shapeValues, shapeLabels] = findCategories(shapeData);
+
+    end
+
+    markerList = {'o', '^', 's', 'd', 'v', '>', '<', ...
+                  'p', 'h', '+', 'x', '*'};
+
+    nShapes = numel(shapeLabels);
+
+    %% Determine groups
+
+    if isempty(opts.GroupColumn)
+
+        groupValues = ones(N, 1);
+        groupLabels = {'All groups'};
+
+    else
+
+        groupData = T.(opts.GroupColumn);
+
+        [groupValues, groupLabels] = findCategories(groupData);
+
+    end
+
+    nGroups = numel(groupLabels);
+
+    %% Validate combined-plot styling
+
+    if isempty(opts.EdgeColors)
+
+        % Generate distinct edge colors automatically.
+        groupEdgeColors = lines(max(nGroups, 1));
+
+    else
+
+        groupEdgeColors = opts.EdgeColors;
+
+        if ~isnumeric(groupEdgeColors) || ...
+                size(groupEdgeColors, 2) ~= 3 || ...
+                size(groupEdgeColors, 1) ~= nGroups || ...
+                any(~isfinite(groupEdgeColors(:))) || ...
+                any(groupEdgeColors(:) < 0 | groupEdgeColors(:) > 1)
+
+            error(['EdgeColors must be an N-by-3 RGB matrix, ' ...
+                   'where N is the number of groups.']);
+        end
+
+    end
+
+    if isempty(opts.GroupSizes)
+
+        groupSizes = linspace(45, 100, max(nGroups, 1));
+
+    else
+
+        groupSizes = opts.GroupSizes(:).';
+
+        if numel(groupSizes) ~= nGroups || ...
+                any(~isfinite(groupSizes)) || any(groupSizes <= 0)
+
+            error('GroupSizes must contain one positive size per group.');
+        end
+
+    end
+
+    %% Figure output
+
+    fig = struct();
+    fig.separate = gobjects(0);
+    fig.combined = gobjects(0);
+
+    %% Generate separate figures
+
+    if opts.SeparateFigures
+
+        fig.separate = gobjects(nGroups, 1);
+
+        for g = 1:nGroups
+
+            fig.separate(g) = figure( ...
+                'Name', sprintf('%s - %s', ...
+                    opts.FigureTitle, groupLabels{g}), ...
+                'Color', 'w');
+
+            ax = axes(fig.separate(g));
+
+            plotGroup(ax, g, false);
+
+            title(ax, sprintf('%s | %s = %s', ...
+                opts.FigureTitle, opts.GroupColumn, groupLabels{g}), ...
+                'Interpreter', 'none');
+
+        end
+
+    end
+
+    %% Generate combined figure
+
+    if opts.CombinedFigure
+
+        fig.combined = figure( ...
+            'Name', [opts.FigureTitle ' - All Groups'], ...
+            'Color', 'w');
+
+        ax = axes(fig.combined);
+
+        hold(ax, 'on');
+
+        for g = 1:nGroups
+
+            for s = 1:nShapes
+
+                idx = valid & groupValues == g & shapeValues == s;
+
+                if ~any(idx)
+                    continue;
+                end
+
+                % Marker face color represents threshold category.
+                % Edge color represents group.
+                % Marker shape represents ShapeColumn.
+                % Marker size represents group.
+
+                for category = 1:2
+
+                    if category == 1
+                        rows = idx & isLow;
+                        faceColor = opts.LowColor;
+                    else
+                        rows = idx & ~isLow;
+                        faceColor = opts.HighColor;
+                    end
+
+                    if ~any(rows)
+                        continue;
+                    end
+
+                    marker = markerList{mod(s-1, ...
+                        numel(markerList)) + 1};
+
+                    scatter3(ax, x(rows), y(rows), z(rows), ...
+                        groupSizes(g), ...
+                        'Marker', marker, ...
+                        'MarkerFaceColor', faceColor, ...
+                        'MarkerEdgeColor', groupEdgeColors(g, :), ...
+                        'LineWidth', 1.2, ...
+                        'DisplayName', makeLabel( ...
+                            groupLabels{g}, shapeLabels{s}, category));
+
+                end
+
+            end
+
+        end
+
+        finishAxes(ax);
+
+        title(ax, [opts.FigureTitle ' - All Groups'], ...
+            'Interpreter', 'none');
+
+        % Add explicit legends for each visual encoding.
+        addCombinedLegends(ax);
+
+        hold(ax, 'off');
+
+    end
+
+    %% Nested function: plot one group
+
+    function plotGroup(ax, g, combined)
+
+        hold(ax, 'on');
+
+        for s = 1:nShapes
+
+            idx = valid & groupValues == g & shapeValues == s;
+
+            if ~any(idx)
+                continue;
+            end
+
+            marker = markerList{mod(s-1, ...
+                numel(markerList)) + 1};
+
+            % Values below threshold are red.
+            rows = idx & isLow;
+
+            if any(rows)
+
+                if combined
+                    edgeColor = groupEdgeColors(g, :);
+                    markerSize = groupSizes(g);
+                else
+                    edgeColor = [0 0 0];
+                    markerSize = opts.MarkerSize;
+                end
+
+                scatter3(ax, x(rows), y(rows), z(rows), ...
+                    markerSize, ...
+                    'Marker', marker, ...
+                    'MarkerFaceColor', opts.LowColor, ...
+                    'MarkerEdgeColor', edgeColor, ...
+                    'LineWidth', 1.0, ...
+                    'DisplayName', makeLabel( ...
+                        shapeLabels{s}, 'Below threshold', 1));
+
+            end
+
+            % Values at or above threshold are blue.
+            rows = idx & ~isLow;
+
+            if any(rows)
+
+                if combined
+                    edgeColor = groupEdgeColors(g, :);
+                    markerSize = groupSizes(g);
+                else
+                    edgeColor = [0 0 0];
+                    markerSize = opts.MarkerSize;
+                end
+
+                scatter3(ax, x(rows), y(rows), z(rows), ...
+                    markerSize, ...
+                    'Marker', marker, ...
+                    'MarkerFaceColor', opts.HighColor, ...
+                    'MarkerEdgeColor', edgeColor, ...
+                    'LineWidth', 1.0, ...
+                    'DisplayName', makeLabel( ...
+                        shapeLabels{s}, 'At/above threshold', 2));
+
+            end
+
+        end
+
+        finishAxes(ax);
+
+        hold(ax, 'off');
+
+    end
+
+    %% Nested function: format axes
+
+    function finishAxes(ax)
+
+        xlabel(ax, chooseLabel(opts.XLabel, opts.XColumn), ...
+            'Interpreter', 'none');
+
+        ylabel(ax, chooseLabel(opts.YLabel, opts.YColumn), ...
+            'Interpreter', 'none');
+
+        zlabel(ax, chooseLabel(opts.ZLabel, opts.ZColumn), ...
+            'Interpreter', 'none');
+
+        grid(ax, 'on');
+        box(ax, 'on');
+        axis(ax, 'vis3d');
+        view(ax, 3);
+
+        legend(ax, 'show', 'Location', 'best', ...
+            'Interpreter', 'none');
+
+    end
+
+    %% Nested function: combined legends
+
+    function addCombinedLegends(ax)
+
+        % Create dummy points so each legend explains one encoding.
+        hColor = gobjects(0);
+        colorNames = {};
+
+        if ~isempty(opts.ColorColumn)
+
+            hColor(1) = scatter3(ax, nan, nan, nan, ...
+                60, 'o', 'MarkerFaceColor', opts.LowColor, ...
+                'MarkerEdgeColor', 'k');
+
+            colorNames{1} = sprintf('%s %s %g', ...
+                opts.ColorColumn, opts.ColorOperator, opts.Threshold);
+
+            hColor(2) = scatter3(ax, nan, nan, nan, ...
+                60, 'o', 'MarkerFaceColor', opts.HighColor, ...
+                'MarkerEdgeColor', 'k');
+
+            colorNames{2} = sprintf('%s not %s %g', ...
+                opts.ColorColumn, opts.ColorOperator, opts.Threshold);
+
+            legend(ax, hColor, colorNames, ...
+                'Location', 'bestoutside', 'Interpreter', 'none');
+
+        end
+
+        % A combined plot has several encodings. Use a separate
+        % annotation to document edge color and marker-size mappings.
+        if ~isempty(opts.GroupColumn)
+
+            annotation(fig.combined, 'textbox', ...
+                [0.01 0.01 0.40 0.10], ...
+                'String', sprintf([ ...
+                    'Group: %s\n' ...
+                    'Edge color and marker size distinguish groups.'], ...
+                    opts.GroupColumn), ...
+                'FitBoxToText', 'on', ...
+                'BackgroundColor', 'w', ...
+                'Interpreter', 'none');
+
+        end
+
+        if ~isempty(opts.ShapeColumn)
+
+            annotation(fig.combined, 'textbox', ...
+                [0.55 0.01 0.40 0.10], ...
+                'String', sprintf([ ...
+                    'Marker shape: %s\n' ...
+                    'Different shapes represent unique values.'], ...
+                    opts.ShapeColumn), ...
+                'FitBoxToText', 'on', ...
+                'BackgroundColor', 'w', ...
+                'Interpreter', 'none');
+
+        end
+
+    end
+
+end
+
+%% Helper function: set default option
+
+function opts = setDefault(opts, field, value)
+
+    if ~isfield(opts, field) || isempty(opts.(field))
+        opts.(field) = value;
+    end
+
+end
+
+%% Helper function: find unique categories
+
+function [indices, labels] = findCategories(data)
+
+    if iscategorical(data) || isstring(data) || ...
+            iscellstr(data) || ischar(data)
+
+        [~, ~, indices] = unique(string(data), 'stable');
+
+        values = unique(string(data), 'stable');
+        labels = cellstr(values);
+
+    elseif isnumeric(data) || islogical(data)
+
+        [values, ~, indices] = unique(data(:), 'sorted');
+
+        labels = arrayfun(@(v) num2str(v), values, ...
+            'UniformOutput', false);
+
+    else
+
+        error('Category columns must be numeric, logical, string, or categorical.');
+
+    end
+
+    indices = double(indices(:));
+
+end
+
+%% Helper function: create display labels
+
+function label = makeLabel(a, b, category)
+
+    if isnumeric(category)
+        label = sprintf('%s | %s', a, b);
+    else
+        label = sprintf('%s | %s', a, b);
+    end
+
+end
+
+%% Helper function: choose axis label
+
+function label = chooseLabel(customLabel, columnName)
+
+    if isempty(customLabel)
+        label = columnName;
+    else
+        label = customLabel;
+    end
+
+end
